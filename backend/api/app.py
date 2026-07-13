@@ -9,6 +9,7 @@ BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.append(BASE_DIR)
 
 from models.route_finder import find_cat_optimal_route
+from services.general_route import get_bus_occupancy_for_route, get_gemini_general_recommendation  # ⬅️ 추가
 
 app = Flask(__name__)
 CORS(app)
@@ -142,6 +143,7 @@ def get_optimal_route():
     hour = request.args.get('hour', default=9, type=int)
     minute = request.args.get('minute', default=0, type=int)
     weekday = request.args.get('weekday', default=0, type=int)
+    mode = request.args.get('mode', default='accessibility', type=str)  # ⬅️ 추가
 
     final_result = find_cat_optimal_route(start, end, hour)
 
@@ -149,20 +151,26 @@ def get_optimal_route():
         return jsonify(final_result)
 
     routes = final_result.get("routes", [])
-
     rush_hour = is_rush_hour(hour, minute, weekday)
     rush_hour_result = None
 
     if rush_hour and routes:
-        rush_hour_result = get_gemini_rush_hour_recommendation(
-            routes, start, end, hour, minute, weekday
-        )
+        if mode == 'general':
+            # ⬅️ 일반인 모드: 실시간 여석 반영
+            occupancy_data = get_bus_occupancy_for_route(routes[0].get("sub_paths", []))
+            rush_hour_result = get_gemini_general_recommendation(
+                routes, occupancy_data, start, end, hour, minute, weekday
+            )
+        else:
+            # 교통약자 모드: 기존 로직 그대로
+            rush_hour_result = get_gemini_rush_hour_recommendation(
+                routes, start, end, hour, minute, weekday
+            )
 
     final_result["is_rush_hour"] = rush_hour
     final_result["rush_hour_result"] = rush_hour_result
 
     return jsonify(final_result)
-
 
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5000))
