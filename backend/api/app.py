@@ -1,169 +1,211 @@
-from flask import Flask, request, jsonify
-from flask_cors import CORS
+"""
+FastAPI 백엔드 — 이동약자 경로 추천 + 엘리베이터 인접 하차칸 안내
+=================================================================
+
+두 가지 기능을 하나의 웹 API로 제공합니다:
+1. /api/guide            : subway_elevator_guide.py 로직 (기존)
+2. /api/recommend-route  : accessible_route_recommender.py 로직 (신규)
+                           Google Maps + Gemini + 하차칸 안내를 한 번에 묶어서 반환
+
+data.go.kr / Gemini / Google Maps 서비스키는 모두 이 서버(백엔드) 환경변수로만
+관리합니다. 브라우저(프론트엔드)에는 절대 키가 노출되지 않습니다.
+
+설치
+----
+    pip install fastapi uvicorn requests
+
+실행 전 환경변수 설정 (필수: GEMINI_API_KEY / 선택: GOOGLE_MAPS_API_KEY, SUBWAY_API_KEY)
+----------------------------------------------------------------------------
+    맥/리눅스:
+        export GEMINI_API_KEY="..."
+        export GOOGLE_MAPS_API_KEY="..."
+        export SUBWAY_API_KEY="..."
+    윈도우(PowerShell):
+        $env:GEMINI_API_KEY="..."
+        $env:GOOGLE_MAPS_API_KEY="..."
+        $env:SUBWAY_API_KEY="..."
+
+실행
+----
+    uvicorn app:app --reload --port 8000
+
+브라우저에서 확인
+----------------
+    http://localhost:8000/api/guide?line=2호선&station=강남역
+    http://localhost:8000/api/recommend-route?origin=서울역&destination=강남역
+    http://localhost:8000/docs   (자동 생성되는 API 문서)
+"""
+
 import os
-import sys
-import requests
-import json
+from dataclasses import asdict
 
-BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-sys.path.append(BASE_DIR)
+from fastapi import FastAPI, Query
+from fastapi.middleware.cors import CORSMiddleware
 
-from models.route_finder import find_cat_optimal_route
+from subway_elevator_guide import (
+    SERVICE_KEY,
+    fetch_quick_get_off_info,
+    list_covered_stations,
+)
+from accessible_route_recommender import (
+    get_routes_from_google_maps,
+    get_sample_routes,
+    build_prompt,
+    call_gemini,
+    find_route_by_summary,
+    get_subway_legs,
+    get_elevator_friendly_car,
+)
 
-app = Flask(__name__)
-CORS(app)
-app.config['JSON_AS_ASCII'] = False
+app = FastAPI(title="엘리베이터 인접 하차칸 안내 API")
 
-GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
+# 개발 중엔 모든 출처를 허용하고, 실제 배포 시엔 프론트엔드 도메인만 넣어주세요.
+# 예: allow_origins=["https://내프론트도메인.com"]
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_methods=["GET"],
+    allow_headers=["*"],
+)
 
-def is_rush_hour(hour, minute, weekday):
-    return True  # 테스트용
 
-def get_weekday_korean(weekday):
-    days = ["월요일", "화요일", "수요일", "목요일", "금요일", "토요일", "일요일"]
-    return days[weekday] if 0 <= weekday <= 6 else "평일"
+@app.get("/api/guide")
+def get_guide(
+    line: str = Query(..., description="호선 (예: 2호선)"),
+    station: str = Query(..., description="역명 (예: 강남역)"),
+):
+    """노선/역명을 받아 엘리베이터(또는 대체 설비) 인접 하차칸 정보를 반환합니다."""
+    if not station.endswith("역"):
+        station += "역"
 
-def get_rush_hour_type(hour, minute, weekday):
-    total_min = hour * 60 + minute
-    if 5 * 60 + 30 <= total_min <= 7 * 60 + 30:
-        return "출근 러시아워"
-    elif 16 * 60 + 30 <= total_min <= 19 * 60 + 30:
-        return "퇴근 러시아워"
-    elif 21 * 60 <= total_min <= 23 * 60:
-        return "심야 러시아워"
-    return "러시아워"
-
-def get_gemini_rush_hour_recommendation(routes, start, end, hour, minute, weekday):
-    if not GEMINI_API_KEY:
+    if not SERVICE_KEY or SERVICE_KEY == "여기에_발급받은_서비스키를_입력하세요":
         return {
-            "recommended_index": 0,
-            "rush_hour_tip": "API 키 설정 후 러시아워 분석이 제공됩니다.",
-            "alternative": ""
+            "status": "error",
+            "reason": "no_service_key",
+            "message": "서버에 서비스키가 설정되지 않았어요. "
+                       "SUBWAY_API_KEY 환경변수를 설정해주세요.",
+        }
+
+    info = fetch_quick_get_off_info(line, station)
+
+    if info is None:
+        return {
+            "status": "error",
+            "reason": "api_call_failed",
+            "message": "공공데이터 API 호출에 실패했어요. 잠시 후 다시 시도해주세요.",
+        }
+
+    if not info.station_found:
+        covered = list_covered_stations(line, SERVICE_KEY)
+        return {
+            "status": "not_found",
+            "line": line,
+            "station": station,
+            "message": "해당 역 정보를 찾을 수 없어요. "
+                       "철자를 확인하거나, 아직 데이터가 등록되지 않았을 수 있어요.",
+            "covered_stations": covered or [],
+        }
+
+    if not info.directions:
+        return {
+            "status": "no_facility",
+            "line": line,
+            "station": station,
+            "message": "이 역에는 엘리베이터·에스컬레이터 안내 정보가 등록되어 있지 않아요.",
+        }
+
+    return {
+        "status": "ok",
+        "line": info.line,
+        "station": info.station,
+        "directions": [asdict(d) for d in info.directions],
+    }
+
+
+@app.get("/api/stations")
+def get_covered_stations(
+    line: str = Query(..., description="호선 (예: 2호선)"),
+    limit: int = Query(30, description="가져올 최대 역 개수"),
+):
+    """해당 노선에서 실제로 데이터가 등록된 역 목록을 반환합니다."""
+    if not SERVICE_KEY or SERVICE_KEY == "여기에_발급받은_서비스키를_입력하세요":
+        return {"status": "error", "reason": "no_service_key", "stations": []}
+
+    covered = list_covered_stations(line, SERVICE_KEY, limit=limit)
+    if covered is None:
+        return {"status": "error", "reason": "api_call_failed", "stations": []}
+
+    return {"status": "ok", "line": line, "stations": covered}
+
+
+@app.get("/api/recommend-route")
+def recommend_route(
+    origin: str = Query(..., description="출발지 (예: 서울역)"),
+    destination: str = Query(..., description="목적지 (예: 강남역)"),
+):
+    """
+    임산부/노약자를 위한 카테고리별 경로 추천 + 지하철 구간의 하차칸 안내를
+    한 번에 묶어서 반환합니다.
+    """
+    gemini_key = os.environ.get("GEMINI_API_KEY")
+    if not gemini_key:
+        return {
+            "status": "error",
+            "reason": "no_gemini_key",
+            "message": "서버에 GEMINI_API_KEY 환경변수가 설정되어 있지 않습니다.",
+        }
+
+    maps_key = os.environ.get("GOOGLE_MAPS_API_KEY")
+    try:
+        if maps_key:
+            routes = get_routes_from_google_maps(origin, destination, maps_key)
+        else:
+            routes = get_sample_routes()
+    except Exception as e:
+        return {
+            "status": "error",
+            "reason": "maps_api_failed",
+            "message": f"경로 조회 중 오류가 발생했습니다: {e}",
+        }
+
+    if not routes:
+        return {
+            "status": "no_routes",
+            "message": "해당 출발지/목적지 간 경로를 찾을 수 없습니다.",
         }
 
     try:
-        weekday_str = get_weekday_korean(weekday)
-        rush_type = get_rush_hour_type(hour, minute, weekday)
-
-        routes_summary = []
-        for i, r in enumerate(routes[:3]):
-            sub_paths = r.get("sub_paths", [])
-            path_desc = " → ".join([
-                f"{s.get('start_name', '')}({s.get('lane_name', '')})"
-                for s in sub_paths if s.get('traffic_type') != 3
-            ]) or f"{r.get('first_start_station', '')} → {r.get('last_end_station', '')}"
-
-            routes_summary.append({
-                "index": i,
-                "description": path_desc,
-                "time_min": r.get("estimated_comfort_time_min"),
-                "original_time_min": r.get("original_time_min"),
-                "transfer_count": r.get("transfer_count", 0),
-                "has_express_bus": r.get("has_express_bus", False),
-                "payment_krw": r.get("payment_krw", 0)
-            })
-
-        prompt = f"""
-당신은 한국 수도권 대중교통 러시아워 전문가입니다.
-
-현재 상황:
-- 현재 시각: {hour}시 {minute}분
-- 요일: {weekday_str}
-- 시간대: {rush_type}
-- 출발지: {start}
-- 도착지: {end}
-
-분석할 경로 목록:
-{json.dumps(routes_summary, ensure_ascii=False, indent=2)}
-
-위 정보를 바탕으로 다음을 분석해주세요:
-1. {rush_type} 시간대의 일반적인 광역버스 혼잡 패턴 고려
-2. 혼잡할 경우 1~2개 전 정거장에서 탑승하는 것이 유리한지 판단
-3. 버스보다 지하철이 더 나은 대안인지 판단
-4. {weekday_str} {hour}시의 실제 교통 패턴 반영
-
-반드시 아래 JSON 형식으로만 응답 (다른 텍스트 없이):
-{{
-  "recommended_index": 0,
-  "rush_hour_tip": "구체적인 러시아워 팁 (한국어, 2문장, 정거장명 포함)",
-  "alternative": "대안 제안 (한국어, 없으면 빈 문자열)"
-}}
-"""
-
-        url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={GEMINI_API_KEY}"
-        payload = {
-            "contents": [{"parts": [{"text": prompt}]}],
-            "generationConfig": {
-                "temperature": 0.3,
-                "maxOutputTokens": 500
-            }
-        }
-        response = requests.post(url, json=payload, timeout=10)
-
-        if response.status_code == 200:
-            result = response.json()
-            text = result["candidates"][0]["content"]["parts"][0]["text"]
-            text = text.strip().replace("```json", "").replace("```", "").strip()
-            return json.loads(text)
-        else:
-            print(f"Gemini API 상태코드: {response.status_code}, 응답: {response.text}")
-            return {
-                "recommended_index": 0,
-                "rush_hour_tip": f"Gemini API 오류 ({response.status_code})",
-                "alternative": ""
-            }
-
+        prompt = build_prompt(origin, destination, routes)
+        result = call_gemini(prompt, gemini_key)
     except Exception as e:
-        print(f"Gemini 에러: {str(e)}")
         return {
-            "recommended_index": 0,
-            "rush_hour_tip": f"분석 중 오류: {str(e)}",
-            "alternative": ""
+            "status": "error",
+            "reason": "gemini_api_failed",
+            "message": f"Gemini 분석 중 오류가 발생했습니다: {e}",
         }
 
-@app.route('/predict/congestion', methods=['POST'])
-def predict_congestion():
-    data = request.get_json()
-    if not data or 'passenger_count' not in data:
-        return jsonify({"error": "passenger_count 파라미터가 필요합니다."}), 400
-    count = data['passenger_count']
-    if count > 800:
-        result = {"status": "혼잡", "code": 2}
-    elif count > 300:
-        result = {"status": "보통", "code": 1}
-    else:
-        result = {"status": "여유", "code": 0}
-    return jsonify({"passenger_count": count, "prediction": result})
+    # 카테고리별로 지하철 구간이 있으면 하차칸 안내를 붙여서 반환
+    for cat in result.get("categories", []):
+        matched_route = find_route_by_summary(routes, cat.get("route_summary", ""))
+        cat["route_detail"] = matched_route  # 프론트엔드에서 거리/시간 등을 보여줄 때 사용
 
-@app.route('/api/routes', methods=['GET'])
-def get_optimal_route():
-    start = request.args.get('start', '성신여대입구')
-    end = request.args.get('end', '기흥역')
-    hour = request.args.get('hour', default=9, type=int)
-    minute = request.args.get('minute', default=0, type=int)
-    weekday = request.args.get('weekday', default=0, type=int)
+        subway_guides = []
+        for line_name, station_name in get_subway_legs(matched_route):
+            car_info = get_elevator_friendly_car(line_name, station_name)
+            subway_guides.append(
+                {
+                    "line": line_name,
+                    "station": station_name,
+                    "status": car_info["status"],
+                    "message": car_info["message"],
+                }
+            )
+        cat["subway_guides"] = subway_guides
 
-    final_result = find_cat_optimal_route(start, end, hour)
-
-    if final_result.get("status") == "fail":
-        return jsonify(final_result)
-
-    routes = final_result.get("routes", [])
-
-    rush_hour = is_rush_hour(hour, minute, weekday)
-    rush_hour_result = None
-
-    if rush_hour and routes:
-        rush_hour_result = get_gemini_rush_hour_recommendation(
-            routes, start, end, hour, minute, weekday
-        )
-
-    final_result["is_rush_hour"] = rush_hour
-    final_result["rush_hour_result"] = rush_hour_result
-
-    return jsonify(final_result)
-
-
-if __name__ == '__main__':
-    port = int(os.environ.get('PORT', 5000))
-    app.run(host='0.0.0.0', port=port)
+    return {
+        "status": "ok",
+        "origin": origin,
+        "destination": destination,
+        "routes": routes,
+        "recommendation": result,
+    }
