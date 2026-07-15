@@ -2,14 +2,6 @@
 FastAPI 백엔드 — 엘리베이터 인접 하차칸 안내
 =================================================
 
-subway_elevator_guide.py 의 로직을 웹 API로 감싼 서버입니다.
-프론트엔드(브라우저)는 이 서버의 /api/guide 만 호출하고,
-data.go.kr 서비스키는 이 서버 안에만 존재합니다 (브라우저에 절대 노출되지 않음).
-
-설치
-----
-    pip install fastapi uvicorn requests
-
 실행
 ----
     uvicorn app:app --reload --port 8000
