@@ -24,6 +24,33 @@ function getAvatar(avatarId?: string) {
 }
 // ────────────────────────────────────────────────────────────────
 
+// ── 교통약자(노약자/임산부) 아이콘 ─────────────────────────────────
+// 둘 다 currentColor를 써서, 이 아이콘을 쓰는 곳의 글자색(className의 text-* 클래스)을 그대로 따라갑니다.
+function ElderlyIcon({ className }: { className?: string }) {
+  return (
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" fill="none" className={className}>
+      <circle cx="37" cy="12" r="8" fill="currentColor" />
+      <path d="M34 28 L21 42 L21 60" stroke="currentColor" strokeWidth="11" strokeLinecap="round" strokeLinejoin="round" fill="none" />
+      <path d="M35 30 L47 33" stroke="currentColor" strokeWidth="6" strokeLinecap="round" fill="none" />
+      <path d="M49 40 L55 60" stroke="currentColor" strokeWidth="5" strokeLinecap="round" fill="none" />
+      <circle cx="47" cy="33" r="3" fill="currentColor" />
+    </svg>
+  );
+}
+
+function PregnantIcon({ className }: { className?: string }) {
+  return (
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" fill="none" className={className}>
+      <circle cx="29" cy="12" r="8" fill="currentColor" />
+      <path
+        d="M25 24 C22 24 21 27 21 30 L21 54 C21 58 24 60 27 60 C30 60 32 58 32 54 L32 50 C41 50 45 43 42 36 C39 28 31 22 25 24 Z"
+        fill="currentColor"
+      />
+    </svg>
+  );
+}
+// ────────────────────────────────────────────────────────────────
+
 // ── 검색 기록 관리 ──────────────────────────────────────────────
 const HISTORY_KEY = "searchHistory";
 const MAX_HISTORY = 10;
@@ -235,6 +262,11 @@ function SearchModal({ onClose }: { onClose: () => void }) {
   const [departure, setDeparture] = useState("");
   const [arrival, setArrival] = useState("");
   const [isLocating, setIsLocating] = useState(false);
+  const [isElderlySelected, setIsElderlySelected] = useState(false);
+  const [isPregnantSelected, setIsPregnantSelected] = useState(false);
+
+  // 하나라도 선택되면 교통약자 모드로 판단
+  const isAccessibilityMode = isElderlySelected || isPregnantSelected;
 
   const handleGPS = () => {
     if (!navigator.geolocation) {
@@ -265,7 +297,20 @@ function SearchModal({ onClose }: { onClose: () => void }) {
     if (departure && arrival) {
       recordSearch(departure, arrival);
       onClose();
-      navigate("/routes", { state: { departure, arrival } });
+      navigate("/routes", {
+        state: {
+          departure,
+          arrival,
+          isAccessibilityMode,
+          accessibilityType: isElderlySelected && isPregnantSelected
+            ? "both"
+            : isElderlySelected
+            ? "elderly"
+            : isPregnantSelected
+            ? "pregnant"
+            : null,
+        },
+      });
     }
   };
 
@@ -307,6 +352,57 @@ function SearchModal({ onClose }: { onClose: () => void }) {
             className="flex-1 bg-transparent outline-none text-gray-800 placeholder-gray-400"
           />
         </div>
+
+        {/* 교통약자 아이콘 선택 */}
+        <div>
+          <p className="text-sm font-semibold text-gray-700 mb-2">교통약자를 위한 경로가 필요하신가요?</p>
+          <div className="flex gap-3">
+            <button
+              onClick={() => setIsElderlySelected(prev => !prev)}
+              className={`flex-1 flex flex-col items-center gap-1.5 py-3 rounded-xl border-2 transition-colors ${
+                isElderlySelected
+                  ? "border-yellow-400 bg-yellow-50"
+                  : "border-gray-200 bg-gray-50 hover:border-gray-300"
+              }`}
+            >
+              <ElderlyIcon
+                className={`w-8 h-8 transition-all ${
+                  isElderlySelected ? "text-yellow-600" : "text-gray-400 grayscale opacity-50"
+                }`}
+              />
+              <span
+                className={`text-xs font-semibold ${
+                  isElderlySelected ? "text-yellow-700" : "text-gray-500"
+                }`}
+              >
+                노약자
+              </span>
+            </button>
+
+            <button
+              onClick={() => setIsPregnantSelected(prev => !prev)}
+              className={`flex-1 flex flex-col items-center gap-1.5 py-3 rounded-xl border-2 transition-colors ${
+                isPregnantSelected
+                  ? "border-pink-400 bg-pink-50"
+                  : "border-gray-200 bg-gray-50 hover:border-gray-300"
+              }`}
+            >
+              <PregnantIcon
+                className={`w-8 h-8 transition-all ${
+                  isPregnantSelected ? "text-pink-600" : "text-gray-400 grayscale opacity-50"
+                }`}
+              />
+              <span
+                className={`text-xs font-semibold ${
+                  isPregnantSelected ? "text-pink-700" : "text-gray-500"
+                }`}
+              >
+                임산부
+              </span>
+            </button>
+          </div>
+        </div>
+
         <button
           onClick={handleSearch}
           disabled={!departure || !arrival}
@@ -319,6 +415,7 @@ function SearchModal({ onClose }: { onClose: () => void }) {
     </div>
   );
 }
+
 
 function MainScreen() {
   const location = useLocation();
@@ -635,10 +732,55 @@ function BottomNavigation({ onSearchClick }: { onSearchClick?: () => void }) {
   );
 }
 
+type RouteFetchParams = {
+  departure: string;
+  arrival: string;
+  currentHour: number;
+  currentMinute: number;
+  currentWeekday: number;
+};
+
+// ══════════════════════════════════════════════════════════════
+// 🟡 교통약자 경로 생성 — [교통약자팀 담당]
+// 노약자/임산부 아이콘을 선택하고 검색했을 때 호출되는 함수입니다.
+// 이 함수 안의 fetch URL과 파라미터를 여기서 수정하세요.
+// ══════════════════════════════════════════
+function fetchAccessibilityRoutes({
+  departure, arrival, currentHour, currentMinute, currentWeekday,
+}: RouteFetchParams) {
+  return fetch(
+    `${ROUTE_API_BASE}/api/routes?start=${encodeURIComponent(departure)}&end=${encodeURIComponent(arrival)}&hour=${currentHour}&minute=${currentMinute}&weekday=${currentWeekday}`
+  ).then(res => {
+    if (!res.ok) throw new Error("경로를 불러오지 못했습니다.");
+    return res.json();
+  });
+}
+
+// ══════════════════════════════════════════════════════════════
+// 🔵 일반인 경로 생성 — [일반경로팀 담당]
+// 아이콘을 선택하지 않고 검색했을 때 호출되는 함수
+// ══════════════════════════════
+function fetchGeneralRoutes({
+  departure, arrival, currentHour, currentMinute, currentWeekday,
+}: RouteFetchParams) {
+  return fetch(
+    `${ROUTE_API_BASE}/api/routes?start=${encodeURIComponent(departure)}&end=${encodeURIComponent(arrival)}&hour=${currentHour}&minute=${currentMinute}&weekday=${currentWeekday}&mode=general`
+  ).then(res => {
+    if (!res.ok) throw new Error("경로를 불러오지 못했습니다.");
+    return res.json();
+  });
+}
+
 function RouteResultScreen() {
   const navigate = useNavigate();
   const location = useLocation();
-  const { departure, arrival } = (location.state as { departure: string; arrival: string }) || {};
+  const { departure, arrival, isAccessibilityMode, accessibilityType } =
+  (location.state as {
+    departure: string;
+    arrival: string;
+    isAccessibilityMode?: boolean;
+    accessibilityType?: string | null;
+  }) || {};
 
   const [routes, setRoutes] = useState<any[]>([]);
   const [data, setData] = useState<any>(null);
@@ -646,7 +788,7 @@ function RouteResultScreen() {
   const [error, setError] = useState<string | null>(null);
   const [selectedIdx, setSelectedIdx] = useState(0);
 
-  useEffect(() => {
+   useEffect(() => {
     if (!departure || !arrival) return;
 
     const now = new Date();
@@ -655,11 +797,13 @@ function RouteResultScreen() {
     const jsDay = now.getDay();
     const currentWeekday = jsDay === 0 ? 6 : jsDay - 1;
 
-    fetch(`${ROUTE_API_BASE}/api/routes?start=${encodeURIComponent(departure)}&end=${encodeURIComponent(arrival)}&hour=${currentHour}&minute=${currentMinute}&weekday=${currentWeekday}`)
-      .then(res => {
-        if (!res.ok) throw new Error("경로를 불러오지 못했습니다.");
-        return res.json();
-      })
+    const params = { departure, arrival, currentHour, currentMinute, currentWeekday };
+
+    const fetchPromise = isAccessibilityMode
+      ? fetchAccessibilityRoutes(params)
+      : fetchGeneralRoutes(params);
+
+    fetchPromise
       .then(result => {
         if (result.status === "fail") {
           throw new Error(result.message || "위치를 지도에서 찾을 수 없습니다.");
@@ -673,7 +817,7 @@ function RouteResultScreen() {
         setError(err.message);
         setLoading(false);
       });
-  }, [departure, arrival]);
+  }, [departure, arrival, isAccessibilityMode]);
 
   const currentRoute = routes[selectedIdx];
   const isRushHour = data?.is_rush_hour;
