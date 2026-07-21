@@ -1,37 +1,3 @@
-"""
-서울교통공사_빠른하차정보 API 연동 — 엘리베이터 인접 하차칸 안내
-=================================================================
-
-교통약자(임산부, 노약자, 장애인 등)가 지하철 하차 시 엘리베이터와
-가장 가까운 열차 칸/출입문으로 이동할 수 있도록 안내하는 코드입니다.
-
-응답 특징
---------
-- 역 하나당 여러 설비(엘리베이터/에스컬레이터/계단) 정보가 방향별로 옵니다.
-  → plfmCmgFac 값이 "엘리베이터"인 항목만 골라서 사용합니다.
-- 같은 역이라도 상행/하행(또는 방면)에 따라 가까운 칸-문 번호가 다를 수 있습니다.
-- qckgffVhclDoorNo 는 "칸-문" 형식의 문자열입니다 (예: "4-4" = 4번 칸 4번 문).
-- 전체 편성 칸 수는 API가 제공하지 않아, 노선별 일반적인 칸 수를
-  참고값으로만 표시합니다 (실제와 다를 수 있음을 안내 문구에 명시).
-
-사전 준비
---------
-1. https://www.data.go.kr 에서 "서울교통공사_빠른하차정보" 활용신청 (자동승인, 무료)
-2. 발급받은 서비스키를 아래 SERVICE_KEY 값에 붙여넣기 (한 번만 하면 됨)
-
-설치
-----
-    pip install requests
-
-실행 예시
---------
-    python subway_elevator_guide.py
-
-    실행하면 아래처럼 물어봅니다:
-        호선을 입력하세요 (예: 1호선): 1호선
-        역 이름을 입력하세요 (예: 서울역): 서울역
-"""
-
 from __future__ import annotations
 
 import os
@@ -40,15 +6,11 @@ from dataclasses import dataclass
 from typing import Optional
 
 import requests
+from dotenv import load_dotenv
 
-# =============================================================================
-# 설정
-# =============================================================================
+load_dotenv()
 
-# 로컬에서 CLI로 직접 실행할 땐 아래 큰따옴표 안에 키를 붙여넣어도 되고,
-# 서버(app.py)로 실행할 땐 환경변수 SUBWAY_API_KEY를 우선 사용합니다.
-
-SERVICE_KEY = os.environ.get("SUBWAY_API_KEY") or "여기에_발급받은_서비스키를_입력하세요"
+SERVICE_KEY = os.environ.get("SUBWAY_API_KEY", "")
 
 ENDPOINT = "https://apis.data.go.kr/B553766/inout/getFstExit"
 
@@ -120,8 +82,8 @@ def fetch_quick_get_off_info(
     이름을 조금씩 줄여가며 재시도합니다.
     """
     if not service_key:
-        print("[안내] 서비스키가 아직 입력되지 않았어요. "
-              "코드 상단의 SERVICE_KEY 값을 발급받은 키로 바꿔주세요.",
+        print("[안내] 서비스키가 아직 설정되지 않았어요. "
+              "  ",
               file=sys.stderr)
         return None
 
