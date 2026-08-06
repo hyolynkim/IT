@@ -934,35 +934,67 @@ function RouteResultScreen() {
                 </div>
               )}
 
-              <div className="border-t border-gray-200 pt-4 space-y-4">
+             <div className="border-t border-gray-200 pt-4 space-y-4">
                 {currentRoute.sub_paths && currentRoute.sub_paths.length > 0 ? (
-                  currentRoute.sub_paths.map((sub: any, sIdx: number) => (
-                    <div key={sIdx} className="flex flex-col">
-                      <div className="flex items-start gap-3">
-                        <div className={`w-16 h-7 rounded-full flex items-center justify-center font-bold text-xs flex-shrink-0 ${
-                          sub.traffic_type === 1 ? "bg-green-100 text-green-700" :
-                          sub.traffic_type === 2 ? "bg-blue-100 text-blue-700" : "bg-gray-100 text-gray-600"
-                        }`}>
-                          {sub.traffic_type === 1 ? "지하철" : sub.traffic_type === 2 ? "버스" : "도보"}
-                        </div>
-                        <div className="flex-1 pt-0.5">
-                          <div className="font-semibold text-gray-800 text-sm">
-                            {sub.traffic_type === 3 ? "도보 이동" : `${sub.start_name} ➡️ ${sub.end_name}`}
+                  currentRoute.sub_paths.map((sub: any, sIdx: number) => {
+                    // 이 구간의 도착역이 엘리베이터 정보가 있는 역과 같은 역인지 확인
+                    // (역 이름 뒤에 "역"이 붙었다 안 붙었다 할 수 있어 둘 다 비교)
+                    const elevatorInfo =
+                      data?.elevator_info_list?.[selectedIdx] ?? data?.elevator_info ?? null;
+                    const hasElevatorHere =
+                      sub.traffic_type === 1 &&
+                      elevatorInfo?.station &&
+                      sub.end_name &&
+                      (elevatorInfo.station === sub.end_name ||
+                        elevatorInfo.station === `${sub.end_name}역` ||
+                        `${elevatorInfo.station}역` === sub.end_name);
+
+                    // directions 중 실제로 도움이 되는 방향 하나만 뽑기.
+                    // 여러 방향(상행/하행)이 내려오면 일단 첫 번째 것을 대표로 사용합니다.
+                    const elevatorDirection = hasElevatorHere
+                      ? elevatorInfo.directions?.[0]
+                      : null;
+
+                    return (
+                      <div key={sIdx} className="flex flex-col">
+                        <div className="flex items-start gap-3">
+                          <div className={`w-16 h-7 rounded-full flex items-center justify-center font-bold text-xs flex-shrink-0 ${
+                            sub.traffic_type === 1 ? "bg-green-100 text-green-700" :
+                            sub.traffic_type === 2 ? "bg-blue-100 text-blue-700" : "bg-gray-100 text-gray-600"
+                          }`}>
+                            {sub.traffic_type === 1 ? "지하철" : sub.traffic_type === 2 ? "버스" : "도보"}
                           </div>
-                          <div className="text-xs text-gray-500 mt-0.5">
-                            {sub.traffic_type !== 3 && sub.lane_name && (
-                              <span className="font-medium text-gray-700 mr-2">[{sub.lane_name}]</span>
+                          <div className="flex-1 pt-0.5">
+                            <div className="font-semibold text-gray-800 text-sm flex items-center gap-1.5 flex-wrap">
+                              <span>
+                                {sub.traffic_type === 3 ? "도보 이동" : `${sub.start_name} ➡️ ${sub.end_name}`}
+                              </span>
+                              {elevatorDirection && (
+                                <span className="inline-flex items-center gap-0.5 text-[11px] font-medium text-blue-700 bg-blue-100 rounded-full px-2 py-0.5">
+                                  🛗 {elevatorDirection.car}칸 하차 추천
+                                </span>
+                              )}
+                            </div>
+                            {elevatorDirection && (
+                              <div className="text-xs text-blue-600 mt-0.5">
+                                {elevatorDirection.destination} 방면 · {elevatorDirection.car}-{elevatorDirection.door} 문 근처 {elevatorDirection.facility}
+                              </div>
                             )}
-                            <span>{sub.section_time_min}분 소요</span>
-                            {sub.station_count > 0 && <span> ({sub.station_count}개 정거장)</span>}
+                            <div className="text-xs text-gray-500 mt-0.5">
+                              {sub.traffic_type !== 3 && sub.lane_name && (
+                                <span className="font-medium text-gray-700 mr-2">[{sub.lane_name}]</span>
+                              )}
+                              <span>{sub.section_time_min}분 소요</span>
+                              {sub.station_count > 0 && <span> ({sub.station_count}개 정거장)</span>}
+                            </div>
                           </div>
                         </div>
+                        {sIdx < currentRoute.sub_paths.length - 1 && (
+                          <div className="w-0.5 h-4 bg-gray-200 ml-8 my-1" />
+                        )}
                       </div>
-                      {sIdx < currentRoute.sub_paths.length - 1 && (
-                        <div className="w-0.5 h-4 bg-gray-200 ml-8 my-1" />
-                      )}
-                    </div>
-                  ))
+                    );
+                  })
                 ) : (
                   <div className="space-y-3">
                     <div className="flex items-center gap-3">
