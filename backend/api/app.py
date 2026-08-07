@@ -75,11 +75,107 @@ def get_elevator_tip_for_route(route):
     if info is None or not info.station_found or not info.directions:
         return None
 
+    directions = info.directions
+
+    # 방면(상행/하행)이 여러 개 있으면, 실제로 사용자가 타고 온 방향(목적지 방면)에
+    # 맞는 것 하나만 남깁니다. 그 구간의 "바로 이전 정거장"으로 가는 방면이면
+    # (= 오던 길을 되돌아가는 방향) 지금 방향과 반대이므로 제외합니다.
+    stations_list = last_leg.get("stations", [])
+    if len(directions) > 1 and len(stations_list) >= 2:
+        prev_station = stations_list[-2]
+        narrowed = [d for d in directions if d.destination != prev_station]
+        if narrowed:
+            directions = narrowed
+
     return {
         "line": info.line,
         "station": info.station,
-        "directions": [asdict(d) for d in info.directions],
+        "directions": [asdict(d) for d in directions],
     }
+
+
+_MISSING = object()  # "아직 계산 안 함"과 "계산했는데 None(정보 없음)"을 구분하기 위한 표시자
+
+
+def _walk_burden_score(route):
+    """환승·도보가 적을수록(=몸에 부담이 적을수록) 작은 값. 노약자 모드 기본 정렬 기준."""
+    return (
+        route.get("transfer_count", 0),
+        route.get("walk_time_total_min", 0),
+        route.get("estimated_comfort_time_min", 0),
+    )
+
+
+def _general_optimal_score(route):
+    """일반 모드와 동일한 기준(광역버스 우선 → 시간 순)으로 '가장 빠른/좋은' 경로를 고를 때 씁니다."""
+    return (not route.get("has_express_bus", False), route.get("estimated_comfort_time_min", 0))
+
+
+def select_accessibility_routes(routes):
+    """노약자/임산부 모드에서 화면에 보여줄 경로 5개를 고릅니다.
+
+    - 앞 3개("부담 최소"): 환승·도보가 가장 적은 경로. 그중에서도 동점이면
+      엘리베이터 하차 위치가 실제로 확인되는 경로를 우선합니다.
+    - 뒤 2개: 남은 경로 중 요금이 가장 저렴한 것 1개("최소 금액"),
+      그리고 일반 모드와 같은 기준으로 가장 나은 것 1개("최적 경로").
+
+    각 경로 dict에 category("burden"/"cost"/"optimal")와 그에 맞는
+    category_label(화면에 보여줄 탭 이름)을 붙여서 반환합니다.
+    이미 계산한 엘리베이터 정보는 "_elevator_info_cache"에 담아두는데,
+    호출한 쪽(get_optimal_route)에서 이 캐시를 그대로 재사용하고 지워야 합니다.
+    """
+    if not routes:
+        return []
+
+    # route_finder가 mode="accessibility"로 이미 (환승, 도보, 시간) 순 정렬해서 주지만,
+    # 여기서도 명시적으로 한 번 더 정렬해 안전하게 갑니다.
+    burden_sorted = sorted(routes, key=_walk_burden_score)
+
+    # 부담이 비슷한 상위 후보들 중, 엘리베이터 정보가 실제로 확인되는 경로를
+    # 우선하기 위해 상위 몇 개만 미리 엘리베이터 조회를 해둡니다 (전체를 다 조회하면
+    # 공공데이터 API를 너무 많이 호출하게 돼서, 상위 후보로 범위를 좁혔어요).
+    shortlist = burden_sorted[:8]
+    for r in shortlist:
+        r["_elevator_info_cache"] = get_elevator_tip_for_route(r)
+
+    def _shortlist_score(r):
+        info = r.get("_elevator_info_cache")
+        elevator_found = bool(info and info.get("directions"))
+        return (
+            r.get("transfer_count", 0),
+            r.get("walk_time_total_min", 0),
+            0 if elevator_found else 1,  # 엘리베이터 확인된 쪽을 동점 상황에서 우선
+            r.get("estimated_comfort_time_min", 0),
+        )
+
+    shortlist.sort(key=_shortlist_score)
+
+    burden_routes = shortlist[:3]
+    chosen_ids = {id(r) for r in burden_routes}
+
+    true_cheapest = min(routes, key=lambda r: r.get("payment_krw", 0))
+    cost_route = None if id(true_cheapest) in chosen_ids else true_cheapest
+    if cost_route is not None:
+        chosen_ids.add(id(cost_route))
+
+    true_optimal = min(routes, key=_general_optimal_score)
+    optimal_route = None if id(true_optimal) in chosen_ids else true_optimal
+
+    result = []
+    for i, r in enumerate(burden_routes):
+        r["category"] = "burden"
+        r["category_label"] = f"AI 추천 경로 {i + 1}"
+        result.append(r)
+    if cost_route is not None:
+        cost_route["category"] = "cost"
+        cost_route["category_label"] = "최소 금액"
+        result.append(cost_route)
+    if optimal_route is not None:
+        optimal_route["category"] = "optimal"
+        optimal_route["category_label"] = "최적 경로"
+        result.append(optimal_route)
+
+    return result
 
 def is_rush_hour(hour, minute, weekday):
     return True  # 테스트용
@@ -250,12 +346,19 @@ def get_optimal_route():
     mode = request.args.get('mode', default='accessibility', type=str)  # ⬅️ 추가
     accessibility_type = request.args.get('accessibility_type', default=None, type=str)  # elderly / pregnant / both
 
-    final_result = find_cat_optimal_route(start, end, hour)
+    final_result = find_cat_optimal_route(start, end, hour, mode=mode)
 
     if final_result.get("status") == "fail":
         return jsonify(final_result)
 
     routes = final_result.get("routes", [])
+
+    # 교통약자 모드일 땐 후보 전체가 아니라, 부담 최소 3개 + 최소금액/최적 2개로
+    # 화면에 보여줄 경로를 5개로 좁혀서 확정합니다.
+    if mode != 'general' and routes:
+        routes = select_accessibility_routes(routes)
+        final_result["routes"] = routes
+
     rush_hour = is_rush_hour(hour, minute, weekday)
     rush_hour_result = None
 
@@ -269,7 +372,8 @@ def get_optimal_route():
     transfer_info_list = []
     if mode != 'general' and routes:
         for r in routes[:10]:
-            elevator_info_list.append(get_elevator_tip_for_route(r))
+            cached = r.pop("_elevator_info_cache", _MISSING)
+            elevator_info_list.append(get_elevator_tip_for_route(r) if cached is _MISSING else cached)
             transfer_info_list.append(get_transfer_tips_for_route(r))
 
     first_route_first_transfer = (
