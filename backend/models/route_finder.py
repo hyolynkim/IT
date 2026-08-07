@@ -160,8 +160,14 @@ def get_odsay_route(sx, sy, ex, ey):
     except:
         return None
 
-def find_cat_optimal_route(start_name, end_name, departure_hour):
-    """최적 경로 반환 메인 로직"""
+def find_cat_optimal_route(start_name, end_name, departure_hour, mode="general"):
+    """최적 경로 반환 메인 로직
+
+    mode:
+      - "general" (기본값): 기존과 동일 — 광역버스 포함 경로 우선, 그다음 소요시간 순
+      - "accessibility": 노약자/임산부용 — 환승 횟수 · 도보 시간이 적은(=몸에 부담이 적은)
+        경로를 우선으로 재정렬 (같은 후보 경로 목록 안에서 순서만 다르게)
+    """
     sx, sy = get_coords_from_keyword(start_name)
     ex, ey = get_coords_from_keyword(end_name)
     
@@ -188,6 +194,13 @@ def find_cat_optimal_route(start_name, end_name, departure_hour):
             for seg in detailed_segments
             if seg["traffic_type"] == 2
         )
+
+        # 도보 구간 총 소요시간 (노약자 모드 정렬에 사용 — 도보가 적을수록 부담이 적음)
+        walk_time_total_min = sum(
+            seg.get("section_time_min", 0)
+            for seg in detailed_segments
+            if seg["traffic_type"] == 3
+        )
         
         total_penalty = 0
         if has_express_bus and (8 <= departure_hour <= 10 or 18 <= departure_hour <= 20):
@@ -201,17 +214,27 @@ def find_cat_optimal_route(start_name, end_name, departure_hour):
             "estimated_comfort_time_min": comfort_time,
             "payment_krw": path["info"].get("payment", 0),
             "transfer_count": transfer_count,
+            "walk_time_total_min": walk_time_total_min,
             "has_express_bus": has_express_bus,
             "first_start_station": path["info"].get("firstStartStation", ""),
             "last_end_station": path["info"].get("lastEndStation", ""),
             "sub_paths": detailed_segments
         })
 
-    # ✅ 광역버스 포함 경로를 상위로 정렬 후 소요시간 순 정렬
-    refined_paths.sort(key=lambda x: (
-        not x["has_express_bus"],  # 광역버스 있는 경로 먼저
-        x["estimated_comfort_time_min"]
-    ))
+    if mode == "accessibility":
+        # ✅ 노약자/임산부 모드: 환승이 적고, 그다음 도보가 적은 경로를 우선
+        # (같은 후보군 안에서 "빠른 길"이 아니라 "부담이 적은 길"을 기준으로 재정렬)
+        refined_paths.sort(key=lambda x: (
+            x["transfer_count"],
+            x["walk_time_total_min"],
+            x["estimated_comfort_time_min"],
+        ))
+    else:
+        # ✅ 일반 모드(기존과 동일): 광역버스 포함 경로를 상위로 정렬 후 소요시간 순 정렬
+        refined_paths.sort(key=lambda x: (
+            not x["has_express_bus"],  # 광역버스 있는 경로 먼저
+            x["estimated_comfort_time_min"]
+        ))
     
     return {
         "status": "success",
