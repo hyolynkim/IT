@@ -749,16 +749,12 @@ type RouteFetchParams = {
 function fetchAccessibilityRoutes({
   departure, arrival, currentHour, currentMinute, currentWeekday, accessibilityType,
 }: RouteFetchParams) {
-  const params = new URLSearchParams({
-    start: departure,
-    end: arrival,
-    hour: String(currentHour),
-    minute: String(currentMinute),
-    weekday: String(currentWeekday),
-    mode: "accessibility",
-    accessibility_type: accessibilityType ?? "both",
-  });
-  return fetch(`${ROUTE_API_BASE}/api/routes?${params.toString()}`).then(res => {
+  const accessibilityParam = accessibilityType
+    ? `&accessibility_type=${encodeURIComponent(accessibilityType)}`
+    : "";
+  return fetch(
+    `${ROUTE_API_BASE}/api/routes?start=${encodeURIComponent(departure)}&end=${encodeURIComponent(arrival)}&hour=${currentHour}&minute=${currentMinute}&weekday=${currentWeekday}${accessibilityParam}`
+  ).then(res => {
     if (!res.ok) throw new Error("경로를 불러오지 못했습니다.");
     return res.json();
   });
@@ -829,6 +825,20 @@ function RouteResultScreen() {
 
   const currentRoute = routes[selectedIdx];
   const isRushHour = data?.is_rush_hour;
+  // 지금 선택된 경로의 엘리베이터/환승 안내 (역명으로 어느 구간에 붙일지 매칭)
+  const selectedElevatorInfo = data?.elevator_info_list?.[selectedIdx];
+  // 지금 선택된 경로의 "모든" 환승 지점 목록 (환승이 여러 번 있으면 원소도 여러 개)
+  const selectedTransferInfoList: any[] = data?.transfer_info_list?.[selectedIdx] ?? [];
+  const getTransferInfoForStation = (station: string) =>
+    selectedTransferInfoList.find((t: any) => t.station === station);
+  // 도보로 갈아타기 전, 마지막으로 타는 지하철 구간의 인덱스
+  // (엘리베이터 안내는 역명 매칭이 아니라 이 구간에 항상 붙입니다 — 하차역과 정확히 일치)
+  const lastSubwayLegIdx = currentRoute?.sub_paths
+    ? currentRoute.sub_paths.reduce(
+        (lastIdx: number, s: any, i: number) => (s.traffic_type === 1 ? i : lastIdx),
+        -1
+      )
+    : -1;
 
   const getRouteLabel = (idx: number) => {
     if (isRushHour && idx < 3) return `AI 러시아워 ${idx + 1}`;
@@ -841,6 +851,17 @@ function RouteResultScreen() {
     const diff = route.estimated_comfort_time_min - route.original_time_min;
     if (diff === 0) return null;
     return diff > 0 ? `+${diff}분` : `${diff}분`;
+  };
+
+  // 환승정보 CSV의 소요시간("MM:SS")을 화면에 보여줄 한국어 문구로 변환
+  const formatTransferWalkTime = (walkTime: string) => {
+    const [minStr, secStr] = walkTime.split(":");
+    const min = parseInt(minStr, 10) || 0;
+    const sec = parseInt(secStr, 10) || 0;
+    if (min === 0 && sec === 0) return null;
+    if (sec === 0) return `${min}분 소요`;
+    if (min === 0) return `${sec}초 소요`;
+    return `${min}분 ${sec}초 소요`;
   };
 
   return (
@@ -934,65 +955,67 @@ function RouteResultScreen() {
                 </div>
               )}
 
-             <div className="border-t border-gray-200 pt-4 space-y-4">
+              <div className="border-t border-gray-200 pt-4 space-y-4">
                 {currentRoute.sub_paths && currentRoute.sub_paths.length > 0 ? (
                   currentRoute.sub_paths.map((sub: any, sIdx: number) => {
-                    // 이 구간의 도착역이 엘리베이터 정보가 있는 역과 같은 역인지 확인
-                    // (역 이름 뒤에 "역"이 붙었다 안 붙었다 할 수 있어 둘 다 비교)
-                    const elevatorInfo =
-                      data?.elevator_info_list?.[selectedIdx] ?? data?.elevator_info ?? null;
-                    const hasElevatorHere =
-                      sub.traffic_type === 1 &&
-                      elevatorInfo?.station &&
-                      sub.end_name &&
-                      (elevatorInfo.station === sub.end_name ||
-                        elevatorInfo.station === `${sub.end_name}역` ||
-                        `${elevatorInfo.station}역` === sub.end_name);
-
-                    // directions 중 실제로 도움이 되는 방향 하나만 뽑기.
-                    // 여러 방향(상행/하행)이 내려오면 일단 첫 번째 것을 대표로 사용합니다.
-                    const elevatorDirection = hasElevatorHere
-                      ? elevatorInfo.directions?.[0]
+                    const prevLeg = sIdx > 0 ? currentRoute.sub_paths[sIdx - 1] : null;
+                    const prevLegTransferInfo = prevLeg?.traffic_type === 1 ? getTransferInfoForStation(prevLeg.end_name) : null;
+                    const isTransferWalk =
+                      isAccessibilityMode &&
+                      sub.traffic_type === 3 &&
+                      !!prevLegTransferInfo?.options?.[0]?.walk_time;
+                    const transferWalkText = isTransferWalk
+                      ? formatTransferWalkTime(prevLegTransferInfo.options[0].walk_time)
                       : null;
+                    const thisLegTransferInfo = sub.traffic_type === 1 ? getTransferInfoForStation(sub.end_name) : null;
 
                     return (
-                      <div key={sIdx} className="flex flex-col">
-                        <div className="flex items-start gap-3">
-                          <div className={`w-16 h-7 rounded-full flex items-center justify-center font-bold text-xs flex-shrink-0 ${
-                            sub.traffic_type === 1 ? "bg-green-100 text-green-700" :
-                            sub.traffic_type === 2 ? "bg-blue-100 text-blue-700" : "bg-gray-100 text-gray-600"
-                          }`}>
-                            {sub.traffic_type === 1 ? "지하철" : sub.traffic_type === 2 ? "버스" : "도보"}
+                    <div key={sIdx} className="flex flex-col">
+                      <div className="flex items-start gap-3">
+                        <div className={`w-16 h-7 rounded-full flex items-center justify-center font-bold text-xs flex-shrink-0 ${
+                          sub.traffic_type === 1 ? "bg-green-100 text-green-700" :
+                          sub.traffic_type === 2 ? "bg-blue-100 text-blue-700" : "bg-gray-100 text-gray-600"
+                        }`}>
+                          {sub.traffic_type === 1 ? "지하철" : sub.traffic_type === 2 ? "버스" : "도보"}
+                        </div>
+                        <div className="flex-1 pt-0.5">
+                          <div className="font-semibold text-gray-800 text-sm">
+                            {sub.traffic_type === 3 ? "도보 이동" : `${sub.start_name} ➡️ ${sub.end_name}`}
                           </div>
-                          <div className="flex-1 pt-0.5">
-                            <div className="font-semibold text-gray-800 text-sm flex items-center gap-1.5 flex-wrap">
-                              <span>
-                                {sub.traffic_type === 3 ? "도보 이동" : `${sub.start_name} ➡️ ${sub.end_name}`}
-                              </span>
-                              {elevatorDirection && (
-                                <span className="inline-flex items-center gap-0.5 text-[11px] font-medium text-blue-700 bg-blue-100 rounded-full px-2 py-0.5">
-                                  🛗 {elevatorDirection.car}칸 하차 추천
-                                </span>
-                              )}
-                            </div>
-                            {elevatorDirection && (
-                              <div className="text-xs text-blue-600 mt-0.5">
-                                {elevatorDirection.destination} 방면 · {elevatorDirection.car}-{elevatorDirection.door} 문 근처 {elevatorDirection.facility}
-                              </div>
+                          <div className="text-xs text-gray-500 mt-0.5">
+                            {sub.traffic_type !== 3 && sub.lane_name && (
+                              <span className="font-medium text-gray-700 mr-2">[{sub.lane_name}]</span>
                             )}
-                            <div className="text-xs text-gray-500 mt-0.5">
-                              {sub.traffic_type !== 3 && sub.lane_name && (
-                                <span className="font-medium text-gray-700 mr-2">[{sub.lane_name}]</span>
-                              )}
-                              <span>{sub.section_time_min}분 소요</span>
-                              {sub.station_count > 0 && <span> ({sub.station_count}개 정거장)</span>}
-                            </div>
+                            <span>{transferWalkText ?? `${sub.section_time_min}분 소요`}</span>
+                            {sub.station_count > 0 && <span> ({sub.station_count}개 정거장)</span>}
                           </div>
                         </div>
-                        {sIdx < currentRoute.sub_paths.length - 1 && (
-                          <div className="w-0.5 h-4 bg-gray-200 ml-8 my-1" />
-                        )}
                       </div>
+
+                      {isAccessibilityMode && sub.traffic_type === 1 && thisLegTransferInfo?.options?.[0] && (
+                        <div className="ml-[76px] mt-2 bg-green-50 border border-green-200 rounded-lg p-2.5">
+                          <p className="text-xs text-green-800 leading-relaxed">
+                            🔄 <b>{thisLegTransferInfo.options[0].alight_car}-{thisLegTransferInfo.options[0].alight_door}</b>에서 타서{" "}
+                            <b>{thisLegTransferInfo.options[0].board_car}-{thisLegTransferInfo.options[0].board_door}</b>로 내리면 환승이 가장 빨라요
+                          </p>
+                        </div>
+                      )}
+
+                      {isAccessibilityMode && sub.traffic_type === 1 && sIdx === lastSubwayLegIdx && selectedElevatorInfo?.directions?.length > 0 && (
+                        <div className="ml-[76px] mt-2 bg-blue-50 border border-blue-200 rounded-lg p-2.5">
+                          <p className="text-xs font-semibold text-blue-900 mb-1">🛗 {selectedElevatorInfo.station} 하차 안내</p>
+                          {selectedElevatorInfo.directions.map((d: any, dIdx: number) => (
+                            <p key={dIdx} className="text-xs text-blue-800 leading-relaxed">
+                              {d.destination} 방면 · <b>{d.car}-{d.door}</b> 문 근처에 {d.facility}가 있어요
+                            </p>
+                          ))}
+                        </div>
+                      )}
+
+                      {sIdx < currentRoute.sub_paths.length - 1 && (
+                        <div className="w-0.5 h-4 bg-gray-200 ml-8 my-1" />
+                      )}
+                    </div>
                     );
                   })
                 ) : (
@@ -1056,30 +1079,6 @@ function RouteResultScreen() {
               </div>
             )}
 
-            {isAccessibilityMode && (() => {
-              // selectedIdx에 해당하는 경로의 엘리베이터 정보를 사용합니다.
-              // (routes 배열과 elevator_info_list는 백엔드에서 같은 순서로 내려옵니다)
-              const elevatorInfo =
-                data?.elevator_info_list?.[selectedIdx] ?? data?.elevator_info ?? null;
-              if (!elevatorInfo || !elevatorInfo.directions?.length) return null;
-              return (
-                <div className="bg-blue-50 border border-blue-200 rounded-xl p-4">
-                  <div className="flex items-start gap-2">
-                    <span className="text-xl">🛗</span>
-                    <div className="flex-1">
-                      <h4 className="font-semibold text-blue-900 mb-2">
-                        {elevatorInfo.station} 하차 안내
-                      </h4>
-                      {elevatorInfo.directions.map((d: any, dIdx: number) => (
-                        <p key={dIdx} className="text-sm text-blue-800 leading-relaxed mb-1">
-                          {d.destination} 방면 · <b>{d.car}-{d.door}</b> 문 근처에 {d.facility}가 있어요
-                        </p>
-                      ))}
-                    </div>
-                  </div>
-                </div>
-              );
-            })()}
           </div>
 
           <div className="bg-white border-t border-gray-200 p-4">
