@@ -19,10 +19,11 @@ except ModuleNotFoundError as e:
     print(f"[안내] services.general_route 모듈을 찾을 수 없어 '일반인 모드'는 비활성화됩니다: {e}")
     GENERAL_ROUTE_AVAILABLE = False
 
-from subway_elevator_guide import (
+from subway_guide import (
     SERVICE_KEY,
     fetch_quick_get_off_info,
     list_covered_stations,
+    get_transfer_tips_for_route,
 )
 
 app = Flask(__name__)
@@ -97,7 +98,7 @@ def get_rush_hour_type(hour, minute, weekday):
         return "심야 러시아워"
     return "러시아워"
 
-def get_gemini_rush_hour_recommendation(routes, start, end, hour, minute, weekday, elevator_info=None, accessibility_type=None):
+def get_gemini_rush_hour_recommendation(routes, start, end, hour, minute, weekday, elevator_info=None, accessibility_type=None, transfer_info=None):
     if not GEMINI_API_KEY:
         return {
             "recommended_index": 0,
@@ -137,21 +138,33 @@ def get_gemini_rush_hour_recommendation(routes, start, end, hour, minute, weekda
                 f"교통약자를 위해 이 위치 정보를 rush_hour_tip에 자연스러운 문장으로 포함해주세요."
             )
 
+        # 환승 정보가 있으면, Gemini가 팁에 자연스럽게 녹여 넣도록 안내문 추가
+        transfer_note = ""
+        if transfer_info and transfer_info.get("options"):
+            o = transfer_info["options"][0]
+            transfer_note = (
+                f"\n6. 추천 경로(index 0)는 {transfer_info['station']}에서 환승이 있습니다. "
+                f"{o['alight_car']}-{o['alight_door']} 문 근처에서 내리면 "
+                f"{o['to_direction']} 열차 {o['board_car']}-{o['board_door']} 문 바로 앞이라 "
+                f"가장 빠르게 갈아탈 수 있습니다. 이 환승 위치 정보도 rush_hour_tip에 "
+                f"자연스러운 문장으로 포함해주세요."
+            )
+
         # 노약자/임산부 여부에 따라 Gemini가 실제로 배려한 경로를 추천하도록 안내문 추가
         accessibility_note = ""
         if accessibility_type == "pregnant":
             accessibility_note = (
-                "\n6. 이 이용자는 임산부입니다. 계단·에스컬레이터보다 엘리베이터 동선을, "
+                "\n7. 이 이용자는 임산부입니다. 계단·에스컬레이터보다 엘리베이터 동선을, "
                 "환승 횟수가 적은 경로를 우선 고려하고, 혼잡이 심한 구간·시간대는 피하도록 추천해주세요."
             )
         elif accessibility_type == "elderly":
             accessibility_note = (
-                "\n6. 이 이용자는 노약자입니다. 도보 이동 거리와 환승 횟수가 적은 경로를 우선하고, "
+                "\n7. 이 이용자는 노약자입니다. 도보 이동 거리와 환승 횟수가 적은 경로를 우선하고, "
                 "무리한 급행 환승보다는 여유 있게 갈 수 있는 동선을 추천해주세요."
             )
         elif accessibility_type == "both":
             accessibility_note = (
-                "\n6. 이 이용자는 노약자 및 임산부를 위한 경로가 필요합니다. 계단·도보 이동과 환승을 "
+                "\n7. 이 이용자는 노약자 및 임산부를 위한 경로가 필요합니다. 계단·도보 이동과 환승을 "
                 "최소화하고, 혼잡이 심한 구간·시간대는 피하는 방향으로 추천해주세요."
             )
 
@@ -172,7 +185,7 @@ def get_gemini_rush_hour_recommendation(routes, start, end, hour, minute, weekda
 1. {rush_type} 시간대의 일반적인 광역버스 혼잡 패턴 고려
 2. 혼잡할 경우 1~2개 전 정거장에서 탑승하는 것이 유리한지 판단
 3. 버스보다 지하철이 더 나은 대안인지 판단
-4. {weekday_str} {hour}시의 실제 교통 패턴 반영{elevator_note}{accessibility_note}
+4. {weekday_str} {hour}시의 실제 교통 패턴 반영{elevator_note}{transfer_note}{accessibility_note}
 
 반드시 아래 JSON 형식으로만 응답 (다른 텍스트 없이):
 {{
@@ -250,10 +263,18 @@ def get_optimal_route():
     # (러시아워 여부와 상관없이 항상 계산 — 엘리베이터 위치는 혼잡도와 무관한 정보라서요)
     # 화면에서 사용자가 다른 경로를 선택할 수 있으므로, 상위 경로들 각각에 대해 계산해
     # 프론트가 선택된 경로(selectedIdx)에 맞는 정보를 보여줄 수 있게 합니다.
+    # transfer_info_list의 각 원소는 그 경로에 있는 "모든" 환승 지점 리스트입니다
+    # (환승이 여러 번 있는 경로도 전부 반영 — 예전엔 첫 환승만 반영됐던 부분 수정).
     elevator_info_list = []
+    transfer_info_list = []
     if mode != 'general' and routes:
         for r in routes[:10]:
             elevator_info_list.append(get_elevator_tip_for_route(r))
+            transfer_info_list.append(get_transfer_tips_for_route(r))
+
+    first_route_first_transfer = (
+        transfer_info_list[0][0] if transfer_info_list and transfer_info_list[0] else None
+    )
 
     if rush_hour and routes:
         if mode == 'general':
@@ -270,20 +291,24 @@ def get_optimal_route():
                     "alternative": "",
                 }
         else:
-            # 교통약자 모드: 기존 로직 + 엘리베이터 정보 + 노약자/임산부 여부 반영
+            # 교통약자 모드: 기존 로직 + 엘리베이터 정보 + 환승 정보 + 노약자/임산부 여부 반영
             rush_hour_result = get_gemini_rush_hour_recommendation(
                 routes, start, end, hour, minute, weekday,
                 elevator_info=elevator_info_list[0] if elevator_info_list else None,
                 accessibility_type=accessibility_type,
+                transfer_info=first_route_first_transfer,
             )
 
     final_result["is_rush_hour"] = rush_hour
     final_result["rush_hour_result"] = rush_hour_result
     final_result["accessibility_type"] = accessibility_type
-    # elevator_info: 하위 호환용 (첫 번째 경로 기준)
+    # elevator_info / transfer_info: 하위 호환용 (첫 번째 경로의 첫 번째 환승 기준)
     final_result["elevator_info"] = elevator_info_list[0] if elevator_info_list else None
+    final_result["transfer_info"] = first_route_first_transfer
     # elevator_info_list: 경로별 엘리베이터 안내 (routes 배열과 동일한 순서/길이)
+    # transfer_info_list: 경로별 "환승 지점 리스트" (각 원소가 그 경로의 모든 환승 정보 배열)
     final_result["elevator_info_list"] = elevator_info_list
+    final_result["transfer_info_list"] = transfer_info_list
 
     return jsonify(final_result)
 
