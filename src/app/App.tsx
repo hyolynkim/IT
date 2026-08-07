@@ -841,9 +841,21 @@ function RouteResultScreen() {
     : -1;
 
   const getRouteLabel = (idx: number) => {
+    if (isAccessibilityMode) {
+      const label = routes[idx]?.category_label;
+      if (label) return label;
+    }
     if (isRushHour && idx < 3) return `AI 러시아워 ${idx + 1}`;
     const generalIdx = isRushHour ? idx - 3 + 1 : idx + 1;
     return `일반 경로 ${generalIdx}`;
+  };
+
+  // 총 소요시간이 60분 이상이면 "N시간 M분"으로, 아니면 "N분"으로 표시
+  const formatDurationMin = (totalMin: number) => {
+    if (totalMin < 60) return `${totalMin}분`;
+    const hours = Math.floor(totalMin / 60);
+    const mins = totalMin % 60;
+    return mins > 0 ? `${hours}시간 ${mins}분` : `${hours}시간`;
   };
 
   const getTimeDiff = (route: any) => {
@@ -906,7 +918,9 @@ function RouteResultScreen() {
         <>
           <div className="flex gap-2 p-3 bg-white border-b border-gray-200 overflow-x-auto">
             {routes.map((route, idx) => {
-              const isAI = isRushHour && idx < 3;
+              const isBurden = isAccessibilityMode && route.category === "burden";
+              const isAI = !isAccessibilityMode && isRushHour && idx < 3;
+              const isHighlighted = isBurden || isAI;
               const isSelected = selectedIdx === idx;
               return (
                 <button
@@ -914,35 +928,44 @@ function RouteResultScreen() {
                   onClick={() => setSelectedIdx(idx)}
                   className={`flex-shrink-0 px-4 py-3 rounded-xl border-2 transition-all ${
                     isSelected
-                      ? isAI ? "bg-orange-500 text-white border-orange-500" : "bg-blue-600 text-white border-blue-600"
-                      : isAI ? "bg-orange-50 text-orange-700 border-orange-300 hover:border-orange-400" : "bg-white text-gray-700 border-gray-200 hover:border-gray-300"
+                      ? isHighlighted ? "bg-orange-300 text-orange-900 border-orange-300" : "bg-blue-600 text-white border-blue-600"
+                      : isHighlighted ? "bg-orange-50 text-orange-600 border-orange-200 hover:border-orange-300" : "bg-white text-gray-700 border-gray-200 hover:border-gray-300"
                   }`}
                 >
-                  <div className="text-xs font-bold mb-1">{isAI ? "🤖 " : ""}{getRouteLabel(idx)}</div>
-                  <div className="text-sm opacity-90">{route.estimated_comfort_time_min}분</div>
+                  <div className="text-xs font-bold mb-1">{isBurden || isAI ? "🤖 " : ""}{getRouteLabel(idx)}</div>
+                  <div className="text-sm opacity-90">{formatDurationMin(route.estimated_comfort_time_min)}</div>
                 </button>
               );
             })}
           </div>
 
           <div className="flex-1 overflow-y-auto p-4 space-y-4">
-            <div className={`bg-white rounded-xl p-4 shadow-md border-2 ${isRushHour && selectedIdx < 3 ? "border-orange-300" : "border-blue-200"}`}>
+            {(() => {
+              const isBurdenSelected = isAccessibilityMode && currentRoute?.category === "burden";
+              const isAISelected = !isAccessibilityMode && isRushHour && selectedIdx < 3;
+              const isHighlightedSelected = isBurdenSelected || isAISelected;
+              return (
+            <div className={`bg-white rounded-xl p-4 shadow-md border-2 ${isHighlightedSelected ? "border-orange-200" : "border-blue-200"}`}>
               <div className="flex items-center justify-between mb-4">
                 <h3 className="font-bold text-lg text-gray-800">{getRouteLabel(selectedIdx)}</h3>
-                {isRushHour && selectedIdx < 3 && (
-                  <span className="px-3 py-1 bg-orange-100 text-orange-600 rounded-full text-xs font-bold">🤖 AI 추천</span>
+                {isHighlightedSelected && (
+                  <span className="px-3 py-1 bg-orange-100 text-orange-600 rounded-full text-xs font-bold">
+                    🤖 AI 추천
+                  </span>
                 )}
               </div>
 
-              <div className="grid grid-cols-3 gap-4 text-center mb-4">
+              <div className={`grid ${getTimeDiff(currentRoute) ? "grid-cols-3" : "grid-cols-2"} gap-4 text-center mb-4`}>
                 <div>
-                  <div className="text-2xl font-bold text-blue-600">{currentRoute.estimated_comfort_time_min}분</div>
+                  <div className="text-2xl font-bold text-blue-600">{formatDurationMin(currentRoute.estimated_comfort_time_min)}</div>
                   <div className="text-xs text-gray-500">예상 소요시간</div>
                 </div>
-                <div>
-                  <div className="text-2xl font-bold text-gray-700">{currentRoute.original_time_min}분</div>
-                  <div className="text-xs text-gray-500">기본 소요시간</div>
-                </div>
+                {getTimeDiff(currentRoute) && (
+                  <div>
+                    <div className="text-2xl font-bold text-gray-700">{formatDurationMin(currentRoute.original_time_min)}</div>
+                    <div className="text-xs text-gray-500">기본 소요시간</div>
+                  </div>
+                )}
                 <div>
                   <div className="text-2xl font-bold text-gray-700">{currentRoute.payment_krw?.toLocaleString()}원</div>
                   <div className="text-xs text-gray-500">요금</div>
@@ -972,11 +995,11 @@ function RouteResultScreen() {
                     return (
                     <div key={sIdx} className="flex flex-col">
                       <div className="flex items-start gap-3">
-                        <div className={`w-16 h-7 rounded-full flex items-center justify-center font-bold text-xs flex-shrink-0 ${
+                        <div className={`w-20 h-7 rounded-full flex items-center justify-center font-bold text-xs flex-shrink-0 ${
                           sub.traffic_type === 1 ? "bg-green-100 text-green-700" :
                           sub.traffic_type === 2 ? "bg-blue-100 text-blue-700" : "bg-gray-100 text-gray-600"
                         }`}>
-                          {sub.traffic_type === 1 ? "지하철" : sub.traffic_type === 2 ? "버스" : "도보"}
+                          {sub.traffic_type === 1 ? "🚇 지하철" : sub.traffic_type === 2 ? "🚌 버스" : "🚶 도보"}
                         </div>
                         <div className="flex-1 pt-0.5">
                           <div className="font-semibold text-gray-800 text-sm">
@@ -993,22 +1016,18 @@ function RouteResultScreen() {
                       </div>
 
                       {isAccessibilityMode && sub.traffic_type === 1 && thisLegTransferInfo?.options?.[0] && (
-                        <div className="ml-[76px] mt-2 bg-green-50 border border-green-200 rounded-lg p-2.5">
-                          <p className="text-xs text-green-800 leading-relaxed">
-                            🔄 <b>{thisLegTransferInfo.options[0].alight_car}-{thisLegTransferInfo.options[0].alight_door}</b>에서 타서{" "}
-                            <b>{thisLegTransferInfo.options[0].board_car}-{thisLegTransferInfo.options[0].board_door}</b>로 내리면 환승이 가장 빨라요
+                        <div className="ml-[76px] mt-2 bg-sky-50 border border-sky-200 rounded-lg p-2.5">
+                          <p className="text-xs text-sky-800 leading-relaxed">
+                            🔄 <b>{thisLegTransferInfo.options[0].alight_car}-{thisLegTransferInfo.options[0].alight_door}호차</b>에서 타시면 {thisLegTransferInfo.station} 환승이 편해요
                           </p>
                         </div>
                       )}
 
-                      {isAccessibilityMode && sub.traffic_type === 1 && sIdx === lastSubwayLegIdx && selectedElevatorInfo?.directions?.length > 0 && (
-                        <div className="ml-[76px] mt-2 bg-blue-50 border border-blue-200 rounded-lg p-2.5">
-                          <p className="text-xs font-semibold text-blue-900 mb-1">🛗 {selectedElevatorInfo.station} 하차 안내</p>
-                          {selectedElevatorInfo.directions.map((d: any, dIdx: number) => (
-                            <p key={dIdx} className="text-xs text-blue-800 leading-relaxed">
-                              {d.destination} 방면 · <b>{d.car}-{d.door}</b> 문 근처에 {d.facility}가 있어요
-                            </p>
-                          ))}
+                      {isAccessibilityMode && sub.traffic_type === 1 && sIdx === lastSubwayLegIdx && selectedElevatorInfo?.directions?.[0] && (
+                        <div className="ml-[76px] mt-2 bg-sky-50 border border-sky-200 rounded-lg p-2.5">
+                          <p className="text-xs text-sky-800 leading-relaxed">
+                            🛗 <b>{selectedElevatorInfo.directions[0].car}-{selectedElevatorInfo.directions[0].door}호차</b>에서 타시면 {selectedElevatorInfo.station} 하차 시 엘리베이터가 가까워요
+                          </p>
                         </div>
                       )}
 
@@ -1039,8 +1058,10 @@ function RouteResultScreen() {
                 )}
               </div>
             </div>
+              );
+            })()}
 
-            {isRushHour && selectedIdx < 3 && data?.rush_hour_result ? (
+            {(isAccessibilityMode ? !!data?.rush_hour_result : (isRushHour && selectedIdx < 3 && !!data?.rush_hour_result)) ? (
               <div className="bg-orange-50 border border-orange-200 rounded-xl p-4">
                 <div className="flex items-start gap-2">
                   <span className="text-xl">🤖</span>
@@ -1335,12 +1356,12 @@ function NavigationScreen() {
         {subPaths.length > 0 ? (
           subPaths.map((sub: any, i: number) => (
             <div key={i} className="flex items-center gap-3">
-              <div className={`w-14 h-6 rounded-full flex items-center justify-center text-xs font-bold flex-shrink-0 ${
+              <div className={`w-[72px] h-6 rounded-full flex items-center justify-center text-xs font-bold flex-shrink-0 ${
                 sub.traffic_type === 1 ? "bg-green-100 text-green-700" :
                 sub.traffic_type === 2 ? "bg-blue-100 text-blue-700" :
                 "bg-gray-100 text-gray-600"
               }`}>
-                {sub.traffic_type === 1 ? "지하철" : sub.traffic_type === 2 ? "버스" : "도보"}
+                {sub.traffic_type === 1 ? "🚇 지하철" : sub.traffic_type === 2 ? "🚌 버스" : "🚶 도보"}
               </div>
               <span className="text-sm text-gray-700 truncate">
                 {sub.traffic_type === 3
