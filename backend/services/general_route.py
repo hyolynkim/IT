@@ -10,12 +10,21 @@ import requests
 import json
 
 
+def _to_int(value):
+    """GBIS API는 숫자 필드도 문자열("", "12" 등)로 내려주는 경우가 많아
+    비교 연산(>=) 전에 안전하게 int로 바꿔줌. 변환 불가하면 None."""
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
 def classify_bus_crowding(bus: dict) -> dict:
     """경기도 광역버스는 전전 정거장부터 만석이 되는 경우가 많아
     여석 기준을 10석 이상으로 보수적으로 잡음."""
-    remain_seat = bus.get("remainSeat1")
-    location_no = bus.get("locationNo1", 0)
-    crowded = bus.get("crowded1")
+    remain_seat = _to_int(bus.get("remainSeat1"))
+    location_no = _to_int(bus.get("locationNo1")) or 0
+    crowded = _to_int(bus.get("crowded1"))
 
     if remain_seat is not None and remain_seat != -1:
         if remain_seat >= 10:
