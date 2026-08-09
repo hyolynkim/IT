@@ -120,45 +120,38 @@ def get_gemini_general_recommendation(routes, occupancy_data, start, end, hour, 
     except Exception as e:
         return {"recommended_index": 0, "rush_hour_tip": f"분석 중 오류: {e}", "alternative": ""}
 def get_bus_occupancy_for_route(sub_paths):
-    bus_legs = [s for s in sub_paths if s.get("traffic_type") == 2]
-    occupancy_list = []
+    """경로의 각 버스 구간(첫 정류소 기준)에 GBIS 여석 정보를 조회해
+    sub_paths의 bus_congestion 필드를 직접 채운다 (in-place)."""
+    for leg in sub_paths:
+        if leg.get("traffic_type") != 2:
+            continue
 
-    for leg in bus_legs:
         station_name = leg.get("start_name")
         route_name = leg.get("lane_name")
         lat = leg.get("start_lat")
         lng = leg.get("start_lng")
 
-        print(f"[DEBUG] 정류소 검색: {station_name} / 노선: {route_name}", flush=True)
-
         if not station_name or not route_name:
+            leg["bus_congestion"] = {"level": "판단불가", "label": "정보 없음"}
             continue
 
         station_id = get_station_id_by_name(station_name, lat, lng)
-        print(f"[DEBUG] station_id: {station_id}", flush=True)  # ⬅️ 여기서 None이면 정류소 검색 실패
-
         if not station_id:
+            leg["bus_congestion"] = {"level": "판단불가", "label": "정류소 정보 없음"}
             continue
 
         arrival_data = get_bus_arrival(station_id)
-        print(f"[DEBUG] arrival_data: {arrival_data}", flush=True)  # ⬅️ 여기서 error가 있는지 확인
-
         if "error" in arrival_data:
+            leg["bus_congestion"] = {"level": "판단불가", "label": "조회 실패"}
             continue
 
         matched_bus = next(
-    (b for b in arrival_data.get("buses", []) if str(b.get("routeName")) == str(route_name)),
-    None
-)
-        print(f"[DEBUG] matched_bus: {matched_bus}", flush=True)  # ⬅️ 여기서 None이면 노선명 불일치
-
+            (b for b in arrival_data.get("buses", []) if str(b.get("routeName")) == str(route_name)),
+            None
+        )
         if matched_bus:
-            crowding = classify_bus_crowding(matched_bus)
-            occupancy_list.append({
-                "routeName": route_name,
-                "station": station_name,
-                **matched_bus,
-                **crowding,
-            })
+            leg["bus_congestion"] = classify_bus_crowding(matched_bus)
+        else:
+            leg["bus_congestion"] = {"level": "판단불가", "label": "도착 예정 정보 없음"}
 
-    return occupancy_list
+    return sub_paths
