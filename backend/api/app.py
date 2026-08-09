@@ -10,6 +10,12 @@ from dataclasses import asdict
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.append(BASE_DIR)
 
+# gunicorn이 'api.app:app'처럼 패키지 경로로 이 모듈을 import할 때는
+# (python app.py로 직접 실행할 때와 달리) 이 파일이 있는 api/ 폴더 자체가
+# import 경로에 안 잡혀서, 같은 폴더의 subway_guide 등을 못 찾는 문제가 있었음.
+API_DIR = os.path.dirname(os.path.abspath(__file__))
+sys.path.append(API_DIR)
+
 from models.route_finder import find_cat_optimal_route
 
 try:
