@@ -2,7 +2,7 @@ from flask import Flask, request, jsonify
 from flask_cors import CORS
 import os
 import sys
-import requests
+import requests, time
 import json
 
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -120,6 +120,99 @@ def get_gemini_rush_hour_recommendation(routes, start, end, hour, minute, weekda
             "rush_hour_tip": f"분석 중 오류: {str(e)}",
             "alternative": ""
         }
+
+
+BUS_LIST_KEY = "4e6c484353746966383074764c4452"   # busRteInfo용
+BUS_ARR_KEY = "c1UVTmspAy1%2F9y1h9T41mvJEUqQ5265VeC79svxBTHqBP1RBZTDXbuXGR4yHeJY8q%2BDgLKT8oq2ROnMzxO6d%2Fg%3D%3D"  # getArrInfoByRouteAllList용
+
+_route_cache = {}     # { "140": "100100118", ... }
+_route_cache_time = 0
+CACHE_TTL = 60 * 60 * 6  # 6시간마다 갱신
+
+def build_route_cache():
+    global _route_cache, _route_cache_time
+    mapping = {}
+    start = 1
+    page_size = 1000
+    while True:
+        end = start + page_size - 1
+        url = f"http://openapi.seoul.go.kr:8088/{BUS_LIST_KEY}/json/busRteInfo/{start}/{end}/"
+        res = requests.get(url, timeout=10).json()
+        rows = res.get("busRteInfo", {}).get("row", [])
+        if not rows:
+            break
+        for r in rows:
+            mapping[r["RTE_NM"]] = r["ROUTE_ID"]
+        if len(rows) < page_size:
+            break
+        start += page_size
+    _route_cache = mapping
+    _route_cache_time = time.time()
+
+def get_route_id(route_nm: str):
+    global _route_cache_time
+    if not _route_cache or (time.time() - _route_cache_time > CACHE_TTL):
+        build_route_cache()
+    return _route_cache.get(route_nm)
+
+CONGESTION_MAP = {"0": "정보없음", "3": "여유", "4": "보통", "5": "혼잡"}
+
+@app.route("/bus/search")
+@app.route("/bus/search")
+@app.route("/bus/search")
+def bus_search():
+    route_nm = request.args.get("routeNm", "").strip()
+    if not route_nm:
+        return jsonify({"error": "버스 번호를 입력해주세요."}), 400
+
+    route_id = get_route_id(route_nm)
+    if not route_id:
+        return jsonify({"error": "해당 노선을 찾을 수 없습니다.", "routes": []}), 404
+
+    try:
+        url = f"http://ws.bus.go.kr/api/rest/arrive/getArrInfoByRouteAll?serviceKey={BUS_ARR_KEY}&busRouteId={route_id}&resultType=json"
+        pos_res = requests.get(url, timeout=5)
+        pos_res.raise_for_status()
+        res = pos_res.json()
+    except Exception as e:
+        print("=== 버스 API 에러 ===", pos_res.text if 'pos_res' in dir() else str(e))
+        return jsonify({"error": "버스 실시간 정보를 불러올 수 없습니다.", "detail": str(e)}), 502
+    
+    items = res.get("ServiceResult", {}).get("msgBody", {}).get("itemList", []) or []
+    if isinstance(items, dict):
+        items = [items]
+    
+    print("=== 응답 원문 ===")
+    print(pos_res.text)
+    res = pos_res.json()
+
+    items = res.get("ServiceResult", {}).get("msgBody", {}).get("itemList", []) or []
+    if isinstance(items, dict):
+        items = [items]
+
+    # 방향(dir)별로 그룹핑
+    by_dir = {}
+    for it in items:
+        direction = it.get("dir", "")
+        if not direction:
+            continue
+        level = it.get("reride_Num1", "0") if it.get("reride_Div1") == "4" else "0"
+        by_dir.setdefault(direction, []).append({
+            "stationName": it.get("stNm"),
+            "congestionLevel": level,
+            "congestionLabel": CONGESTION_MAP.get(level, "정보없음"),
+            "isFull": it.get("full1") == "Y",
+        })
+
+    results = [{
+        "routeId": route_id,
+        "routeNm": route_nm,
+        "direction": f"{d}행",
+        "stations": stations,
+    } for d, stations in by_dir.items()]
+
+    return jsonify({"routes": results})
+
 
 @app.route('/predict/congestion', methods=['POST'])
 def predict_congestion():
