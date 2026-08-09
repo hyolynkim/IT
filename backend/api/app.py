@@ -398,8 +398,22 @@ def get_optimal_route():
                     r["sub_paths"] = get_bus_occupancy_for_route(
                         r.get("sub_paths", []), cache=bus_congestion_cache
                     )
+                # get_gemini_general_recommendation은 occupancy_data가
+                # [{routeName, station, label}, ...] 형태이길 기대함 — 위에서
+                # sub_paths에 채운 bus_congestion 필드로부터 그 형태를 다시 만들어줌
+                # (sub_paths 자체를 그대로 넘기면 도보/지하철 구간엔 routeName이
+                # 없어서 KeyError로 500이 났었음).
+                occupancy_data = [
+                    {
+                        "routeName": leg.get("lane_name"),
+                        "station": leg.get("start_name"),
+                        "label": leg["bus_congestion"]["label"],
+                    }
+                    for leg in routes[0].get("sub_paths", [])
+                    if leg.get("traffic_type") == 2 and leg.get("bus_congestion")
+                ]
                 rush_hour_result = get_gemini_general_recommendation(
-                    routes, routes[0]["sub_paths"], start, end, hour, minute, weekday
+                    routes, occupancy_data, start, end, hour, minute, weekday
                 )
         else:
             # 교통약자 모드: 기존 로직 + 엘리베이터 정보 + 환승 정보 + 노약자/임산부 여부 반영
