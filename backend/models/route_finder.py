@@ -160,7 +160,7 @@ def get_odsay_route(sx, sy, ex, ey):
     except:
         return None
 
-def find_cat_optimal_route(start_name, end_name, departure_hour):
+def find_cat_optimal_route(start_name, end_name, departure_hour, mode="general"):  # ⬅️ mode 파라미터 추가
     """최적 경로 반환 메인 로직"""
     sx, sy = get_coords_from_keyword(start_name)
     ex, ey = get_coords_from_keyword(end_name)
@@ -207,9 +207,8 @@ def find_cat_optimal_route(start_name, end_name, departure_hour):
             "sub_paths": detailed_segments
         })
 
-    # ✅ 광역버스 포함 경로를 상위로 정렬 후 소요시간 순 정렬
     refined_paths.sort(key=lambda x: (
-        not x["has_express_bus"],  # 광역버스 있는 경로 먼저
+        not x["has_express_bus"],
         x["estimated_comfort_time_min"]
     ))
     
@@ -218,5 +217,6 @@ def find_cat_optimal_route(start_name, end_name, departure_hour):
         "start": start_name,
         "end": end_name,
         "departure_hour": departure_hour,
+        "mode": mode,  # ⬅️ 응답에도 같이 포함 (나중에 프론트에서 참고할 수 있게)
         "routes": refined_paths
     }
