@@ -383,17 +383,13 @@ def get_optimal_route():
     if rush_hour and routes:
         if mode == 'general':
             if GENERAL_ROUTE_AVAILABLE:
-                # ⬅️ 일반인 모드: 실시간 여석 반영
-                occupancy_data = get_bus_occupancy_for_route(routes[0].get("sub_paths", []))
+                # 화면 탭에 보이는 후보 경로 전부(최대 10개)에 여석 정보를 채워줍니다.
+                # (예전엔 routes[0]에만 채워서 다른 경로 탭을 선택하면 여석 뱃지가 안 보였음)
+                for r in routes[:10]:
+                    r["sub_paths"] = get_bus_occupancy_for_route(r.get("sub_paths", []))
                 rush_hour_result = get_gemini_general_recommendation(
-                    routes, occupancy_data, start, end, hour, minute, weekday
+                    routes, routes[0]["sub_paths"], start, end, hour, minute, weekday
                 )
-            else:
-                rush_hour_result = {
-                    "recommended_index": 0,
-                    "rush_hour_tip": "일반인 모드 기능(services.general_route)이 아직 준비되지 않았습니다.",
-                    "alternative": "",
-                }
         else:
             # 교통약자 모드: 기존 로직 + 엘리베이터 정보 + 환승 정보 + 노약자/임산부 여부 반영
             rush_hour_result = get_gemini_rush_hour_recommendation(
