@@ -389,10 +389,15 @@ def get_optimal_route():
     if rush_hour and routes:
         if mode == 'general':
             if GENERAL_ROUTE_AVAILABLE:
-                # 화면 탭에 보이는 후보 경로 전부(최대 10개)에 여석 정보를 채워줍니다.
+                # 화면 탭에 보이는 후보 경로 여러 개(최대 5개)에 여석 정보를 채워줍니다.
                 # (예전엔 routes[0]에만 채워서 다른 경로 탭을 선택하면 여석 뱃지가 안 보였음)
-                for r in routes[:10]:
-                    r["sub_paths"] = get_bus_occupancy_for_route(r.get("sub_paths", []))
+                # 같은 정류소/버스 조합은 bus_congestion_cache로 재사용해 GBIS 중복 호출을
+                # 줄임 — 안 그러면 경로 수 × 버스 구간 수만큼 순차 호출이 쌓여 타임아웃 남.
+                bus_congestion_cache = {}
+                for r in routes[:5]:
+                    r["sub_paths"] = get_bus_occupancy_for_route(
+                        r.get("sub_paths", []), cache=bus_congestion_cache
+                    )
                 rush_hour_result = get_gemini_general_recommendation(
                     routes, routes[0]["sub_paths"], start, end, hour, minute, weekday
                 )

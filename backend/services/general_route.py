@@ -128,9 +128,20 @@ def get_gemini_general_recommendation(routes, occupancy_data, start, end, hour, 
         return json.loads(text)
     except Exception as e:
         return {"recommended_index": 0, "rush_hour_tip": f"분석 중 오류: {e}", "alternative": ""}
-def get_bus_occupancy_for_route(sub_paths):
+def get_bus_occupancy_for_route(sub_paths, cache=None):
     """경로의 각 버스 구간(첫 정류소 기준)에 GBIS 여석 정보를 조회해
-    sub_paths의 bus_congestion 필드를 직접 채운다 (in-place)."""
+    sub_paths의 bus_congestion 필드를 직접 채운다 (in-place).
+
+    cache: {(station_name, route_name): bus_congestion} 딕셔너리를 넘기면
+    같은 (정류소, 버스번호) 조합을 여러 경로가 공유할 때 GBIS를 중복
+    호출하지 않는다. 후보 경로가 많을 때(app.py에서 여러 경로에 대해
+    이 함수를 반복 호출) 응답 시간이 크게 늘어나는 걸 막기 위함 —
+    캐시 없이는 후보 경로 수 × 버스 구간 수만큼 순차 호출이 쌓여
+    타임아웃(500)으로 이어졌음.
+    """
+    if cache is None:
+        cache = {}
+
     for leg in sub_paths:
         if leg.get("traffic_type") != 2:
             continue
@@ -144,14 +155,19 @@ def get_bus_occupancy_for_route(sub_paths):
             leg["bus_congestion"] = {"level": "판단불가", "label": "정보 없음"}
             continue
 
+        cache_key = (station_name, route_name)
+        if cache_key in cache:
+            leg["bus_congestion"] = cache[cache_key]
+            continue
+
         station_id = get_station_id_by_name(station_name, lat, lng)
         if not station_id:
-            leg["bus_congestion"] = {"level": "판단불가", "label": "정류소 정보 없음"}
+            leg["bus_congestion"] = cache[cache_key] = {"level": "판단불가", "label": "정류소 정보 없음"}
             continue
 
         arrival_data = get_bus_arrival(station_id)
         if "error" in arrival_data:
-            leg["bus_congestion"] = {"level": "판단불가", "label": "조회 실패"}
+            leg["bus_congestion"] = cache[cache_key] = {"level": "판단불가", "label": "조회 실패"}
             continue
 
         matched_bus = next(
@@ -159,8 +175,8 @@ def get_bus_occupancy_for_route(sub_paths):
             None
         )
         if matched_bus:
-            leg["bus_congestion"] = classify_bus_crowding(matched_bus)
+            leg["bus_congestion"] = cache[cache_key] = classify_bus_crowding(matched_bus)
         else:
-            leg["bus_congestion"] = {"level": "판단불가", "label": "도착 예정 정보 없음"}
+            leg["bus_congestion"] = cache[cache_key] = {"level": "판단불가", "label": "도착 예정 정보 없음"}
 
     return sub_paths
