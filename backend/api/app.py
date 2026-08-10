@@ -389,12 +389,13 @@ def get_optimal_route():
     if rush_hour and routes:
         if mode == 'general':
             if GENERAL_ROUTE_AVAILABLE:
-                # 화면 탭에 보이는 후보 경로 여러 개(최대 5개)에 여석 정보를 채워줍니다.
+                # 화면 탭에 보이는 후보 경로(AI 러시아워 3개 + 일반 경로 3개 = 최대 6개,
+                # 프론트 RouteResultScreen의 list.slice(0, 6)과 맞춤)에 여석 정보를 채워줍니다.
                 # (예전엔 routes[0]에만 채워서 다른 경로 탭을 선택하면 여석 뱃지가 안 보였음)
                 # 같은 정류소/버스 조합은 bus_congestion_cache로 재사용해 GBIS 중복 호출을
                 # 줄임 — 안 그러면 경로 수 × 버스 구간 수만큼 순차 호출이 쌓여 타임아웃 남.
                 bus_congestion_cache = {}
-                for r in routes[:5]:
+                for r in routes[:6]:
                     r["sub_paths"] = get_bus_occupancy_for_route(
                         r.get("sub_paths", []), cache=bus_congestion_cache
                     )

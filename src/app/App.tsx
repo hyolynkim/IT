@@ -25,7 +25,8 @@ function getAvatar(avatarId?: string) {
 // ────────────────────────────────────────────────────────────────
 
 // ── 버스 여석/혼잡도 뱃지 ─────────────────────────────────────────
-function CongestionBadge({ level }: { level: string }) {
+// level 옆에 실시간 여석 수 등 상세 label("빈자리 12석" 등)도 같이 보여줌
+function CongestionBadge({ level, label }: { level: string; label?: string }) {
   const styles: Record<string, string> = {
     "여유": "bg-green-100 text-green-700",
     "보통": "bg-yellow-100 text-yellow-700",
@@ -34,8 +35,11 @@ function CongestionBadge({ level }: { level: string }) {
     "판단불가": "bg-gray-100 text-gray-500",
   };
   return (
-    <span className={`px-2 py-0.5 rounded-full text-[11px] font-semibold ${styles[level] || styles["판단불가"]}`}>
-      {level}
+    <span className="inline-flex items-center gap-1">
+      <span className={`px-2 py-0.5 rounded-full text-[11px] font-semibold ${styles[level] || styles["판단불가"]}`}>
+        {level}
+      </span>
+      {label && <span className="text-[11px] text-gray-400">{label}</span>}
     </span>
   );
 }
@@ -804,7 +808,10 @@ function RouteResultScreen() {
         }
         setData(result);
         const list = Array.isArray(result) ? result : result.routes ?? [];
-        setRoutes(list.slice(0, 10));
+        // AI 러시아워 추천 3개 + 일반 경로 3개, 총 6개까지만 탭에 보여줌
+        // (getRouteLabel이 러시아워일 때 앞 3개를 AI로 라벨링하므로 6으로 자르면
+        // 정확히 "AI 3개 + 일반 3개"가 됨)
+        setRoutes(list.slice(0, 6));
         setLoading(false);
       })
       .catch(err => {
@@ -942,7 +949,7 @@ function RouteResultScreen() {
                             <span>{sub.section_time_min}분 소요</span>
                             {sub.station_count > 0 && <span>({sub.station_count}개 정거장)</span>}
                             {sub.traffic_type === 2 && sub.bus_congestion && (
-                              <CongestionBadge level={sub.bus_congestion.level} />
+                              <CongestionBadge level={sub.bus_congestion.level} label={sub.bus_congestion.label} />
                             )}
                           </div>
                         </div>
@@ -1857,4 +1864,4 @@ export default function App() {
     </Router>
   );
 }
-  
+
