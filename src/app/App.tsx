@@ -656,11 +656,14 @@ function CongestionTab() {
   const [error, setError] = useState<string | null>(null);
   const [busQuery, setBusQuery] = useState("");
   const [busResults, setBusResults] = useState<any[]>([]);
-  const [busSource, setBusSource] = useState<"gbis" | "stats">("gbis"); // 추가: 응답이 실시간(gbis)인지 통계(stats)인지
+  const [busSource, setBusSource] = useState<"gbis" | "stats">("gbis");
   const [busLoading, setBusLoading] = useState(false);
   const [busError, setBusError] = useState<string | null>(null);
   const [bookmarks, setBookmarks] = useState<BusBookmark[]>(() => loadBusBookmarks());
   const [selectedBusCity, setSelectedBusCity] = useState("");
+
+  // 버스 검색 결과가 하나라도 있으면 "버스 검색 모드"로 간주 -> 지하철 그리드 숨김
+  const isBusSearchActive = busResults.length > 0 || busLoading || !!busError;
 
   const handleBusSearch = () => {
     if (!busQuery) return;
@@ -669,7 +672,6 @@ function CongestionTab() {
 
     const isSeoul = selectedBusCity === "seoul";
 
-    // 서울 선택 시: 통계(csv) 기반 API / 그 외: 기존 실시간(GBIS) API
     const url = isSeoul
       ? `${ROUTE_API_BASE}/api/congestion/route?routeNm=${encodeURIComponent(busQuery)}`
       : `${ROUTE_API_BASE}/bus/search?routeNm=${encodeURIComponent(busQuery)}${
@@ -694,6 +696,15 @@ function CongestionTab() {
       });
   };
 
+  // 버스 검색창을 비우면 다시 지하철 그리드가 보이도록 리셋
+  const handleBusQueryChange = (value: string) => {
+    setBusQuery(value);
+    if (!value) {
+      setBusResults([]);
+      setBusError(null);
+    }
+  };
+
   const now = new Date();
   const currentHour = now.getHours();
   const currentMinutes = now.getMinutes() >= 30 ? "30분" : "00분";
@@ -702,7 +713,7 @@ function CongestionTab() {
   const dayType = dayOfWeek === 0 ? "일요일" : dayOfWeek === 6 ? "토요일" : "평일";
   const lines = ["1호선", "2호선", "3호선", "4호선", "5호선", "6호선", "7호선", "8호선"];
   const BUS_CITIES = [
-    { code: "seoul", name: "서울" }, // ← 추가: 성남 왼쪽에 서울
+    { code: "seoul", name: "서울" },
     { code: "31020", name: "성남" },
     { code: "31010", name: "수원" },
     { code: "31190", name: "용인" },
@@ -715,6 +726,9 @@ function CongestionTab() {
   ];
 
   useEffect(() => {
+    // 버스 검색 중일 땐 지하철 데이터가 필요 없으니 재조회하지 않음
+    if (isBusSearchActive) return;
+
     fetch(`${API_BASE}/congestion`)
       .then(res => {
         if (!res.ok) throw new Error("데이터를 불러오지 못했습니다.");
@@ -729,6 +743,7 @@ function CongestionTab() {
         setError(err.message);
         setLoading(false);
       });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const filtered = allData.filter(item => {
@@ -745,11 +760,10 @@ function CongestionTab() {
     return { badge: "bg-green-100 text-green-700", bar: "bg-green-500", label: "쾌적" };
   };
 
-  // 통계(stats) 응답의 level 문자열("여유"/"보통"/"혼잡")을 뱃지 스타일로 매핑
   const getStatsLevelStyle = (level: string) => {
     if (level === "혼잡") return "bg-red-100 text-red-700";
     if (level === "보통") return "bg-yellow-100 text-yellow-700";
-    return "bg-green-100 text-green-700"; // 여유
+    return "bg-green-100 text-green-700";
   };
 
   const getStatsBarColor = (level: string) => {
@@ -765,17 +779,7 @@ function CongestionTab() {
         <span className="text-sm text-gray-500">{currentTimeLabel} ({dayType})</span>
       </div>
 
-      <div className="bg-white rounded-xl p-3 shadow-md flex items-center gap-2">
-        <Search className="w-5 h-5 text-gray-400" />
-        <input
-          type="text"
-          placeholder="역 이름 검색 (예: 강남)"
-          value={searchQuery}
-          onChange={(e) => setSearchQuery(e.target.value)}
-          className="flex-1 outline-none text-gray-800 placeholder-gray-400"
-        />
-      </div>
-
+      {/* 지하철 노선 필터 (검색창보다 위) */}
       <div className="flex items-center gap-2 overflow-x-auto pb-1">
         <div className="flex-shrink-0 pl-1 pr-1">
           <Train className="w-5 h-5 text-gray-400" />
@@ -795,6 +799,18 @@ function CongestionTab() {
             {line}
           </button>
         ))}
+      </div>
+
+      {/* 역 이름 검색창: 지하철 필터 바로 아래로 이동 */}
+      <div className="bg-white rounded-xl p-3 shadow-md flex items-center gap-2">
+        <Search className="w-5 h-5 text-gray-400" />
+        <input
+          type="text"
+          placeholder="역 이름 검색 (예: 강남)"
+          value={searchQuery}
+          onChange={(e) => setSearchQuery(e.target.value)}
+          className="flex-1 outline-none text-gray-800 placeholder-gray-400"
+        />
       </div>
 
       {/* 버스 혼잡도 검색 */}
@@ -824,7 +840,7 @@ function CongestionTab() {
           type="text"
           placeholder="버스 번호 입력 (예: 140)"
           value={busQuery}
-          onChange={(e) => setBusQuery(e.target.value)}
+          onChange={(e) => handleBusQueryChange(e.target.value)}
           onKeyDown={(e) => { if (e.key === "Enter") handleBusSearch(); }}
           className="flex-1 px-3 py-2 bg-white border border-gray-200 rounded-lg outline-none focus:border-blue-400 text-sm"
         />
@@ -840,47 +856,48 @@ function CongestionTab() {
       {busLoading && <div className="text-center py-4 text-gray-400 text-sm">버스 정보 불러오는 중...</div>}
       {busError && <div className="text-center py-4 text-red-500 text-sm">{busError}</div>}
 
-      {/* 서울(통계 기반) 검색 결과: 정류소별 카드 + line bar */}
+      {/* 서울(통계 기반) 검색 결과 */}
       {busResults.length > 0 && busSource === "stats" && (
         <div className="space-y-3">
-          {busResults.map((route) => (
-            <div key={route.routeNm} className="bg-white rounded-xl p-4 shadow-sm border border-gray-100 space-y-3">
-              <div className="flex items-center justify-between">
-                <div>
-                  <span className="font-bold text-gray-800">{route.routeNm}번</span>
-                  <span className="text-sm text-gray-500 ml-2">{route.routeName}</span>
+          {busResults.map((route) => {
+            // "142번(도봉동~고속터미널)" -> "도봉동~고속터미널" (괄호 안 내용만 추출)
+            const routeNameMatch = (route.routeName || "").match(/\((.+)\)/);
+            const routeNameShort = routeNameMatch ? routeNameMatch[1] : route.routeName;
+            return (
+              <div key={route.routeNm} className="bg-white rounded-xl p-4 shadow-sm border border-gray-100 space-y-3">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <span className="font-bold text-gray-800">{route.routeNm}번</span>
+                    <span className="text-sm text-gray-500 ml-2">{routeNameShort}</span>
+                  </div>
                 </div>
-                <span className="text-xs text-gray-400">{route.hour}시 기준 · 10개월 평균</span>
-              </div>
-              <p className="text-xs text-gray-400">경유 정류소 {route.stations.length}개</p>
+                <p className="text-xs text-gray-400">경유 정류소 {route.stations.length}개</p>
 
-              <div className="space-y-2 max-h-96 overflow-y-auto pr-1">
-                {route.stations.map((s: any) => (
-                  <div key={s.stopId} className="border border-gray-100 rounded-lg p-2.5">
-                    <div className="flex items-center justify-between mb-1.5">
-                      <span className="text-sm font-semibold text-gray-800 truncate">{s.stationName}</span>
-                      <span className={`px-2 py-0.5 rounded-full text-[11px] font-semibold flex-shrink-0 ml-2 ${getStatsLevelStyle(s.level)}`}>
-                        {s.level}
-                      </span>
-                    </div>
-                    <div className="flex items-center gap-2">
-                      <div className="flex-1 bg-gray-100 rounded-full h-1.5">
+                <div className="space-y-2 max-h-96 overflow-y-auto pr-1">
+                  {route.stations.map((s: any) => (
+                    <div key={s.stopId} className="border border-gray-100 rounded-lg p-2.5">
+                      <div className="flex items-center justify-between mb-1.5">
+                        <span className="text-sm font-semibold text-gray-800 truncate">{s.stationName}</span>
+                        <span className={`px-2 py-0.5 rounded-full text-[11px] font-semibold flex-shrink-0 ml-2 ${getStatsLevelStyle(s.level)}`}>
+                          {s.level}
+                        </span>
+                      </div>
+                      <div className="bg-gray-100 rounded-full h-1.5">
                         <div
                           className={`h-1.5 rounded-full ${getStatsBarColor(s.level)}`}
                           style={{ width: `${s.barPercent}%` }}
                         />
                       </div>
-                      <span className="text-[11px] text-gray-400 flex-shrink-0 w-12 text-right">{s.avgCount}명</span>
                     </div>
-                  </div>
-                ))}
+                  ))}
+                </div>
               </div>
-            </div>
-          ))}
+            );
+          })}
         </div>
       )}
 
-      {/* 그 외 도시(실시간 GBIS) 검색 결과: 기존 형태 그대로 */}
+      {/* 그 외 도시(실시간 GBIS) 검색 결과 */}
       {busResults.length > 0 && busSource === "gbis" && (
         <div className="space-y-3">
           {busResults.map((route) => {
@@ -914,45 +931,52 @@ function CongestionTab() {
         </div>
       )}
 
-      <p className="text-xs text-gray-400">현재 시간({currentTimeLabel}, {dayType}) 기준 혼잡도입니다</p>
+      {/* 버스 검색이 활성화되지 않았을 때만 지하철 그리드 표시 */}
+      {!isBusSearchActive && (
+        <>
+          <p className="text-xs text-gray-400">현재 시간({currentTimeLabel}, {dayType}) 기준 혼잡도입니다</p>
 
-      {loading && <div className="text-center py-10 text-gray-500">혼잡도 데이터 불러오는 중...</div>}
-      {error && <div className="text-center py-10 text-red-500">{error}</div>}
+          {loading && <div className="text-center py-10 text-gray-500">혼잡도 데이터 불러오는 중...</div>}
+          {error && <div className="text-center py-10 text-red-500">{error}</div>}
 
-      {!loading && !error && (
-        <div className="grid grid-cols-2 gap-3">
-          {filtered.length > 0 ? filtered.map((item: any, idx: number) => {
-            const percentage = Number(item["혼잡도"] ?? 0);
-            const congestion = getCongestionColor(percentage);
-            const displayPercent = Math.min(Math.round(percentage), 100);
-            return (
-              <div key={idx} className="bg-white rounded-xl p-3 shadow-sm flex flex-col justify-between border border-gray-100">
-                <div className="flex flex-col mb-2 gap-1">
-                  <div className="flex items-start justify-between gap-1">
-                    <span className="font-bold text-gray-800 text-base truncate">{item["출발역"]}</span>
-                    <span className={`px-2 py-0.5 rounded-md text-[10px] whitespace-nowrap font-semibold flex-shrink-0 ${congestion.badge}`}>
-                      {congestion.label}
-                    </span>
+          {!loading && !error && (
+            <div className="grid grid-cols-2 gap-3">
+              {filtered.length > 0 ? filtered.map((item: any, idx: number) => {
+                const percentage = Number(item["혼잡도"] ?? 0);
+                const congestion = getCongestionColor(percentage);
+                const displayPercent = Math.min(Math.round(percentage), 100);
+                return (
+                  <div key={idx} className="bg-white rounded-xl p-3 shadow-sm flex flex-col justify-between border border-gray-100">
+                    <div className="flex flex-col mb-2 gap-1">
+                      <div className="flex items-start justify-between gap-1">
+                        <span className="font-bold text-gray-800 text-base truncate">{item["출발역"]}</span>
+                        <span className={`px-2 py-0.5 rounded-md text-[10px] whitespace-nowrap font-semibold flex-shrink-0 ${congestion.badge}`}>
+                          {congestion.label}
+                        </span>
+                      </div>
+                      <span className="text-xs text-gray-500 truncate">{item["호선"]} {item["상하구분"]}</span>
+                    </div>
+                    <div className="mt-auto pt-2">
+                      <div className="w-full bg-gray-100 rounded-full h-2">
+                        <div className={`h-2 rounded-full ${congestion.bar}`} style={{ width: `${displayPercent}%` }} />
+                      </div>
+                    </div>
                   </div>
-                  <span className="text-xs text-gray-500 truncate">{item["호선"]} {item["상하구분"]}</span>
+                );
+              }) : (
+                <div className="col-span-2 text-center py-10 text-gray-400 text-sm">
+                  {searchQuery ? `"${searchQuery}" 검색 결과가 없습니다.` : "현재 시간대 데이터가 없습니다."}
                 </div>
-                <div className="mt-auto pt-2">
-                  <div className="w-full bg-gray-100 rounded-full h-2">
-                    <div className={`h-2 rounded-full ${congestion.bar}`} style={{ width: `${displayPercent}%` }} />
-                  </div>
-                </div>
-              </div>
-            );
-          }) : (
-            <div className="col-span-2 text-center py-10 text-gray-400 text-sm">
-              {searchQuery ? `"${searchQuery}" 검색 결과가 없습니다.` : "현재 시간대 데이터가 없습니다."}
+              )}
             </div>
           )}
-        </div>
+        </>
       )}
     </div>
   );
 }
+
+
 
 
 function BottomNavigation({ onSearchClick }: { onSearchClick?: () => void }) {
