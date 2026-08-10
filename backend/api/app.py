@@ -1,12 +1,15 @@
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 from tago_service import get_route_congestion
+from bus_congestion import CongestionEstimator
 import os
 import re
 import sys
 import requests, time
 import json
 from dataclasses import asdict
+
+est = CongestionEstimator()  
 
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.append(BASE_DIR)
@@ -396,6 +399,47 @@ def bus_search():
             "stations": stations,
         }]
     })
+
+@app.route("/api/congestion/route")
+def bus_congestion_route():
+    """서울 통계 기반(csv) 버스 혼잡도 - 노선번호로 검색 -> 경유 정류소 전체 + 혼잡도"""
+    route_nm = request.args.get("routeNm", "").strip()
+    hour = request.args.get("hour", type=int)
+
+    if not route_nm:
+        return jsonify({"error": "버스 번호를 입력해주세요."}), 400
+
+    if hour is None:
+        from datetime import datetime
+        hour = datetime.now().hour
+
+    stops = est.get_route_stops(route_nm, hour=hour)
+
+    if not stops:
+        return jsonify({"error": f"'{route_nm}'번 노선을 찾을 수 없습니다.", "routes": []}), 404
+
+    stations = [
+        {
+            "stationName": s["역명"],
+            "stopId": s["정류장ID"],
+            "arsNumber": s["ARS번호"],
+            "level": s["level"],           # "여유" | "보통" | "혼잡"
+            "barPercent": s["bar_percent"],  # 0~100
+            "avgCount": s["count"],          # 하루평균 승차인원(참고용)
+        }
+        for s in stops
+    ]
+
+    return jsonify({
+        "source": "stats",  # 프론트에서 실시간(gbis)과 구분하기 위한 표시
+        "routes": [{
+            "routeNm": stops[0]["노선번호"],
+            "routeName": stops[0]["노선명"],
+            "hour": hour,
+            "stations": stations,
+        }]
+    })
+
 
 
 @app.route('/predict/congestion', methods=['POST'])

@@ -656,28 +656,42 @@ function CongestionTab() {
   const [error, setError] = useState<string | null>(null);
   const [busQuery, setBusQuery] = useState("");
   const [busResults, setBusResults] = useState<any[]>([]);
+  const [busSource, setBusSource] = useState<"gbis" | "stats">("gbis"); // 추가: 응답이 실시간(gbis)인지 통계(stats)인지
   const [busLoading, setBusLoading] = useState(false);
   const [busError, setBusError] = useState<string | null>(null);
   const [bookmarks, setBookmarks] = useState<BusBookmark[]>(() => loadBusBookmarks());
-  const [selectedBusCity, setSelectedBusCity] = useState("");  
+  const [selectedBusCity, setSelectedBusCity] = useState("");
 
   const handleBusSearch = () => {
     if (!busQuery) return;
     setBusLoading(true);
     setBusError(null);
-    const cityParam = selectedBusCity ? `&cityCode=${selectedBusCity}` : "";
-    fetch(`${ROUTE_API_BASE}/bus/search?routeNm=${encodeURIComponent(busQuery)}${cityParam}`)
+
+    const isSeoul = selectedBusCity === "seoul";
+
+    // 서울 선택 시: 통계(csv) 기반 API / 그 외: 기존 실시간(GBIS) API
+    const url = isSeoul
+      ? `${ROUTE_API_BASE}/api/congestion/route?routeNm=${encodeURIComponent(busQuery)}`
+      : `${ROUTE_API_BASE}/bus/search?routeNm=${encodeURIComponent(busQuery)}${
+          selectedBusCity ? `&cityCode=${selectedBusCity}` : ""
+        }`;
+
+    fetch(url)
       .then(res => res.json())
       .then(data => {
         if (!data.routes || data.routes.length === 0) {
-          setBusError("검색 결과가 없습니다.");
+          setBusError(data.error || "검색 결과가 없습니다.");
           setBusResults([]);
         } else {
           setBusResults(data.routes);
+          setBusSource(isSeoul ? "stats" : "gbis");
         }
         setBusLoading(false);
       })
-      .catch(() => { setBusError("버스 정보를 불러오지 못했습니다."); setBusLoading(false); });
+      .catch(() => {
+        setBusError("버스 정보를 불러오지 못했습니다.");
+        setBusLoading(false);
+      });
   };
 
   const now = new Date();
@@ -686,8 +700,9 @@ function CongestionTab() {
   const currentTimeLabel = `${currentHour}시${currentMinutes}`;
   const dayOfWeek = now.getDay();
   const dayType = dayOfWeek === 0 ? "일요일" : dayOfWeek === 6 ? "토요일" : "평일";
-  const lines = ["1호선","2호선","3호선","4호선","5호선","6호선","7호선","8호선"];
-  const BUS_CITIES = [   // ← 이 블록 추가
+  const lines = ["1호선", "2호선", "3호선", "4호선", "5호선", "6호선", "7호선", "8호선"];
+  const BUS_CITIES = [
+    { code: "seoul", name: "서울" }, // ← 추가: 성남 왼쪽에 서울
     { code: "31020", name: "성남" },
     { code: "31010", name: "수원" },
     { code: "31190", name: "용인" },
@@ -730,6 +745,19 @@ function CongestionTab() {
     return { badge: "bg-green-100 text-green-700", bar: "bg-green-500", label: "쾌적" };
   };
 
+  // 통계(stats) 응답의 level 문자열("여유"/"보통"/"혼잡")을 뱃지 스타일로 매핑
+  const getStatsLevelStyle = (level: string) => {
+    if (level === "혼잡") return "bg-red-100 text-red-700";
+    if (level === "보통") return "bg-yellow-100 text-yellow-700";
+    return "bg-green-100 text-green-700"; // 여유
+  };
+
+  const getStatsBarColor = (level: string) => {
+    if (level === "혼잡") return "bg-red-500";
+    if (level === "보통") return "bg-yellow-500";
+    return "bg-green-500";
+  };
+
   return (
     <div className="p-4 space-y-4">
       <div className="flex items-center justify-between">
@@ -769,7 +797,6 @@ function CongestionTab() {
         ))}
       </div>
 
-      {/* 버스 혼잡도 검색 */}
       {/* 버스 혼잡도 검색 */}
       <div className="flex items-center gap-2 overflow-x-auto pb-1 mt-2">
         <div className="flex-shrink-0 pl-1 pr-1">
@@ -813,7 +840,48 @@ function CongestionTab() {
       {busLoading && <div className="text-center py-4 text-gray-400 text-sm">버스 정보 불러오는 중...</div>}
       {busError && <div className="text-center py-4 text-red-500 text-sm">{busError}</div>}
 
-      {busResults.length > 0 && (
+      {/* 서울(통계 기반) 검색 결과: 정류소별 카드 + line bar */}
+      {busResults.length > 0 && busSource === "stats" && (
+        <div className="space-y-3">
+          {busResults.map((route) => (
+            <div key={route.routeNm} className="bg-white rounded-xl p-4 shadow-sm border border-gray-100 space-y-3">
+              <div className="flex items-center justify-between">
+                <div>
+                  <span className="font-bold text-gray-800">{route.routeNm}번</span>
+                  <span className="text-sm text-gray-500 ml-2">{route.routeName}</span>
+                </div>
+                <span className="text-xs text-gray-400">{route.hour}시 기준 · 10개월 평균</span>
+              </div>
+              <p className="text-xs text-gray-400">경유 정류소 {route.stations.length}개</p>
+
+              <div className="space-y-2 max-h-96 overflow-y-auto pr-1">
+                {route.stations.map((s: any) => (
+                  <div key={s.stopId} className="border border-gray-100 rounded-lg p-2.5">
+                    <div className="flex items-center justify-between mb-1.5">
+                      <span className="text-sm font-semibold text-gray-800 truncate">{s.stationName}</span>
+                      <span className={`px-2 py-0.5 rounded-full text-[11px] font-semibold flex-shrink-0 ml-2 ${getStatsLevelStyle(s.level)}`}>
+                        {s.level}
+                      </span>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <div className="flex-1 bg-gray-100 rounded-full h-1.5">
+                        <div
+                          className={`h-1.5 rounded-full ${getStatsBarColor(s.level)}`}
+                          style={{ width: `${s.barPercent}%` }}
+                        />
+                      </div>
+                      <span className="text-[11px] text-gray-400 flex-shrink-0 w-12 text-right">{s.avgCount}명</span>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* 그 외 도시(실시간 GBIS) 검색 결과: 기존 형태 그대로 */}
+      {busResults.length > 0 && busSource === "gbis" && (
         <div className="space-y-3">
           {busResults.map((route) => {
             const bookmarked = isBusBookmarked(bookmarks, route.routeId, route.direction);
@@ -885,6 +953,7 @@ function CongestionTab() {
     </div>
   );
 }
+
 
 function BottomNavigation({ onSearchClick }: { onSearchClick?: () => void }) {
   const navigate = useNavigate();
