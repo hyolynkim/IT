@@ -37,6 +37,7 @@ function getAvatar(avatarId?: string) {
 }
 // ────────────────────────────────────────────────────────────────
 
+
 // ── 검색 기록 관리 ──────────────────────────────────────────────
 const HISTORY_KEY = "searchHistory";
 const MAX_HISTORY = 10;
@@ -933,7 +934,10 @@ function RouteResultScreen() {
         }
         setData(result);
         const list = Array.isArray(result) ? result : result.routes ?? [];
-        setRoutes(list.slice(0, 10));
+        // AI 러시아워 추천 3개 + 일반 경로 3개, 총 6개까지만 탭에 보여줌
+        // (getRouteLabel이 러시아워일 때 앞 3개를 AI로 라벨링하므로 6으로 자르면
+        // 정확히 "AI 3개 + 일반 3개"가 됨)
+        setRoutes(list.slice(0, 6));
         setLoading(false);
       })
       .catch(err => {
@@ -1088,7 +1092,7 @@ function RouteResultScreen() {
                           </div>
                           <div className="text-xs text-gray-500 mt-0.5">
                             {sub.traffic_type !== 3 && sub.lane_name && (
-                              <span className="font-medium text-gray-700 mr-2">[{sub.lane_name}]</span>
+
                             )}
                             <span>{formatDuration(sub.section_time_min)} 소요</span>
                             {sub.station_count > 0 && <span> ({sub.station_count}개 정거장)</span>}
@@ -2005,3 +2009,4 @@ export default function App() {
     </Router>
   );
 }
+

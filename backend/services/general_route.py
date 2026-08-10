@@ -122,11 +122,34 @@ def get_gemini_general_recommendation(routes, occupancy_data, start, end, hour, 
 
     try:
         response = requests.post(url, json=payload, timeout=10)
-        result = response.json()
+        try:
+            result = response.json()
+        except ValueError:
+            print(f"[Gemini] 응답이 JSON이 아님 (status={response.status_code}): {response.text[:500]}", flush=True)
+            return {
+                "recommended_index": 0,
+                "rush_hour_tip": f"분석 중 오류: Gemini 응답이 JSON이 아님 (status={response.status_code})",
+                "alternative": "",
+            }
+
+        if response.status_code != 200 or "candidates" not in result:
+            # Gemini 실패 시 보통 {"error": {"code":..., "message":..., "status":...}} 형태로 옴.
+            # 실제 원인(키 문제/할당량 초과/모델명 오류 등)을 로그와 응답 둘 다에 남겨서
+            # "분석 중 오류: 'candidates'"처럼 원인 불명 메시지가 되지 않게 함.
+            error_info = result.get("error", {})
+            error_message = error_info.get("message") or str(result)[:300]
+            print(f"[Gemini] 호출 실패 (status={response.status_code}): {result}", flush=True)
+            return {
+                "recommended_index": 0,
+                "rush_hour_tip": f"분석 중 오류: Gemini API {response.status_code} - {error_message}",
+                "alternative": "",
+            }
+
         text = result["candidates"][0]["content"]["parts"][0]["text"]
         text = text.strip().replace("```json", "").replace("```", "").strip()
         return json.loads(text)
     except Exception as e:
+        print(f"[Gemini] 예외 발생: {e}", flush=True)
         return {"recommended_index": 0, "rush_hour_tip": f"분석 중 오류: {e}", "alternative": ""}
 def get_bus_occupancy_for_route(sub_paths, cache=None):
     """경로의 각 버스 구간(첫 정류소 기준)에 GBIS 여석 정보를 조회해
