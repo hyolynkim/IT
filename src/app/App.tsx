@@ -659,12 +659,14 @@ function CongestionTab() {
   const [busLoading, setBusLoading] = useState(false);
   const [busError, setBusError] = useState<string | null>(null);
   const [bookmarks, setBookmarks] = useState<BusBookmark[]>(() => loadBusBookmarks());
+  const [selectedBusCity, setSelectedBusCity] = useState("");  
 
   const handleBusSearch = () => {
     if (!busQuery) return;
     setBusLoading(true);
     setBusError(null);
-    fetch(`${ROUTE_API_BASE}/bus/search?routeNm=${encodeURIComponent(busQuery)}`)
+    const cityParam = selectedBusCity ? `&cityCode=${selectedBusCity}` : "";
+    fetch(`${ROUTE_API_BASE}/bus/search?routeNm=${encodeURIComponent(busQuery)}${cityParam}`)
       .then(res => res.json())
       .then(data => {
         if (!data.routes || data.routes.length === 0) {
@@ -677,6 +679,7 @@ function CongestionTab() {
       })
       .catch(() => { setBusError("버스 정보를 불러오지 못했습니다."); setBusLoading(false); });
   };
+
   const now = new Date();
   const currentHour = now.getHours();
   const currentMinutes = now.getMinutes() >= 30 ? "30분" : "00분";
@@ -684,6 +687,17 @@ function CongestionTab() {
   const dayOfWeek = now.getDay();
   const dayType = dayOfWeek === 0 ? "일요일" : dayOfWeek === 6 ? "토요일" : "평일";
   const lines = ["1호선","2호선","3호선","4호선","5호선","6호선","7호선","8호선"];
+  const BUS_CITIES = [   // ← 이 블록 추가
+    { code: "31020", name: "성남" },
+    { code: "31010", name: "수원" },
+    { code: "31190", name: "용인" },
+    { code: "31100", name: "고양" },
+    { code: "31050", name: "부천" },
+    { code: "31040", name: "안양" },
+    { code: "21", name: "부산" },
+    { code: "23", name: "인천" },
+    { code: "22", name: "대구" },
+  ];
 
   useEffect(() => {
     fetch(`${API_BASE}/congestion`)
@@ -756,8 +770,29 @@ function CongestionTab() {
       </div>
 
       {/* 버스 혼잡도 검색 */}
+      {/* 버스 혼잡도 검색 */}
+      <div className="flex items-center gap-2 overflow-x-auto pb-1 mt-2">
+        <div className="flex-shrink-0 pl-1 pr-1">
+          <Bus className="w-5 h-5 text-gray-400" />
+        </div>
+        <button
+          onClick={() => setSelectedBusCity("")}
+          className={`flex-shrink-0 px-3 py-1.5 rounded-full text-sm font-semibold transition-colors ${selectedBusCity === "" ? "bg-blue-600 text-white" : "bg-gray-100 text-gray-600"}`}
+        >
+          전체
+        </button>
+        {BUS_CITIES.map((city) => (
+          <button
+            key={city.code}
+            onClick={() => setSelectedBusCity(city.code)}
+            className={`flex-shrink-0 px-3 py-1.5 rounded-full text-sm font-semibold transition-colors ${selectedBusCity === city.code ? "bg-blue-600 text-white" : "bg-gray-100 text-gray-600"}`}
+          >
+            {city.name}
+          </button>
+        ))}
+      </div>
+
       <div className="flex items-center gap-2 mt-2">
-        <Bus className="w-5 h-5 text-gray-400 flex-shrink-0" />
         <input
           type="text"
           placeholder="버스 번호 입력 (예: 140)"
@@ -766,7 +801,6 @@ function CongestionTab() {
           onKeyDown={(e) => { if (e.key === "Enter") handleBusSearch(); }}
           className="flex-1 px-3 py-2 bg-white border border-gray-200 rounded-lg outline-none focus:border-blue-400 text-sm"
         />
-
         <button
           onClick={handleBusSearch}
           disabled={!busQuery || busLoading}

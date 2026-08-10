@@ -1,5 +1,6 @@
 from flask import Flask, request, jsonify
 from flask_cors import CORS
+from tago_service import get_route_congestion
 import os
 import re
 import sys
@@ -364,61 +365,37 @@ def get_route_id(route_nm: str):
 
 CONGESTION_MAP = {"0": "정보없음", "3": "여유", "4": "보통", "5": "혼잡"}
 
-@app.route("/bus/search")
-@app.route("/bus/search")
+
 @app.route("/bus/search")
 def bus_search():
     route_nm = request.args.get("routeNm", "").strip()
+    city_code = request.args.get("cityCode", "").strip() or None
     if not route_nm:
         return jsonify({"error": "버스 번호를 입력해주세요."}), 400
 
-    route_id = get_route_id(route_nm)
-    if not route_id:
-        return jsonify({"error": "해당 노선을 찾을 수 없습니다.", "routes": []}), 404
+    result = get_route_congestion(route_nm, city_code=city_code)
 
-    try:
-        url = f"http://ws.bus.go.kr/api/rest/arrive/getArrInfoByRouteAll?serviceKey={BUS_ARR_KEY}&busRouteId={route_id}&resultType=json"
-        pos_res = requests.get(url, timeout=5)
-        pos_res.raise_for_status()
-        res = pos_res.json()
-    except Exception as e:
-        print("=== 버스 API 에러 ===", pos_res.text if 'pos_res' in dir() else str(e))
-        return jsonify({"error": "버스 실시간 정보를 불러올 수 없습니다.", "detail": str(e)}), 502
-    
-    items = res.get("ServiceResult", {}).get("msgBody", {}).get("itemList", []) or []
-    if isinstance(items, dict):
-        items = [items]
-    
-    print("=== 응답 원문 ===")
-    print(pos_res.text)
-    res = pos_res.json()
+    if result.get("error"):
+        return jsonify({"error": result["error"], "routes": []}), 404
 
-    items = res.get("ServiceResult", {}).get("msgBody", {}).get("itemList", []) or []
-    if isinstance(items, dict):
-        items = [items]
+    stations = [
+        {
+            "stationName": s["stationName"],
+            "congestionLevel": s["congestionLevel"] or "0",
+            "congestionLabel": s["congestionLabel"],
+            "isFull": s["congestionLevel"] == "5",
+        }
+        for s in result["stations"]
+    ]
 
-    # 방향(dir)별로 그룹핑
-    by_dir = {}
-    for it in items:
-        direction = it.get("dir", "")
-        if not direction:
-            continue
-        level = it.get("reride_Num1", "0") if it.get("reride_Div1") == "4" else "0"
-        by_dir.setdefault(direction, []).append({
-            "stationName": it.get("stNm"),
-            "congestionLevel": level,
-            "congestionLabel": CONGESTION_MAP.get(level, "정보없음"),
-            "isFull": it.get("full1") == "Y",
-        })
-
-    results = [{
-        "routeId": route_id,
-        "routeNm": route_nm,
-        "direction": f"{d}행",
-        "stations": stations,
-    } for d, stations in by_dir.items()]
-
-    return jsonify({"routes": results})
+    return jsonify({
+        "routes": [{
+            "routeId": result["routeId"],
+            "routeNm": result["routeNo"],
+            "direction": "전체",
+            "stations": stations,
+        }]
+    })
 
 
 @app.route('/predict/congestion', methods=['POST'])
