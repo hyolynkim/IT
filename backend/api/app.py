@@ -14,7 +14,7 @@ sys.path.append(BASE_DIR)
 from models.route_finder import find_cat_optimal_route
 
 try:
-    from bus_congestion import get_bus_occupancy_for_route, get_gemini_general_recommendation, get_bus_congestion_trend_for_route, preload_bus_ridership  # ⬅️ 추가
+    from bus_congestion import get_bus_occupancy_for_route, get_gemini_general_recommendation, get_bus_congestion_trend_for_route, preload_bus_ridership, route_has_non_operating_bus  # ⬅️ 추가
     GENERAL_ROUTE_AVAILABLE = True
 except ImportError as e:
     print(f"[안내] bus_congestion 모듈을 찾을 수 없어 '일반인 모드'는 비활성화됩니다: {e}")
@@ -353,23 +353,31 @@ def get_route_subway_congestion_trend(route, weekday, hour, minute):
                         next_pct = sum(next_values) / len(next_values)
                         diff_pct = next_pct - cur_pct
 
-                        if diff_pct != 0:  # 오르든 내리든, 변화가 있는 구간만 안내
+                        # 오르든 내리든, 다음 지하철이 10분 이내에 올 때만 안내합니다.
+                        # 오르는 중이면 "지금 이동"을, 내리는 중이면 "N분 후 이동"을
+                        # 추천합니다. 10분보다 더 기다려야 하는 상황은 애매한 조언이라
+                        # 아무 것도 안 보여줍니다.
+                        if diff_pct > 0 and minutes_until_next <= 10:
                             trends.append({
                                 "line": line,
                                 "station": station,
                                 "current_pct": round(cur_pct),
                                 "next_pct": round(next_pct),
-                                "diff_pct": round(diff_pct),  # 양수=상승, 음수=하락
-                                "direction": "up" if diff_pct > 0 else "down",
+                                "diff_pct": round(diff_pct),
+                                "direction": "up",
                                 "minutes_until_next": minutes_until_next,
-                                # 다음 슬롯까지 30분 넘게 남았으면 추천 문구를 안 보여줍니다
-                                # (지하철은 30분 단위라 사실상 거의 항상 30분 미만이에요).
-                                "recommendation": (
-                                    (
-                                        f"{minutes_until_next}분 후에 이동하는 것을 추천합니다"
-                                        if diff_pct < 0 else "지금 이동하는 것을 추천합니다"
-                                    ) if minutes_until_next < 30 else None
-                                ),
+                                "recommendation": "지금 이동하는 것을 추천합니다",
+                            })
+                        elif diff_pct < 0 and minutes_until_next <= 10:
+                            trends.append({
+                                "line": line,
+                                "station": station,
+                                "current_pct": round(cur_pct),
+                                "next_pct": round(next_pct),
+                                "diff_pct": round(diff_pct),
+                                "direction": "down",
+                                "minutes_until_next": minutes_until_next,
+                                "recommendation": f"{minutes_until_next}분 후에 이동하는 것을 추천합니다",
                             })
 
         elapsed += seg.get("section_time_min", 0)
@@ -711,6 +719,16 @@ def get_optimal_route():
         return jsonify(final_result)
 
     routes = final_result.get("routes", [])
+
+    # 검색 시각 기준으로, 경로 안에 운행하지 않는 버스가 있으면 그 경로는 후보에서
+    # 제외합니다 (예: 심야버스를 낮 시간대에 타야 하는 경로 등). 승하차 데이터가
+    # 아예 없는 조합은 판단 불가로 보고 걸러내지 않습니다.
+    if GENERAL_ROUTE_AVAILABLE and routes:
+        routes = [
+            r for r in routes
+            if not route_has_non_operating_bus(r.get("sub_paths", []), hour, minute)
+        ]
+        final_result["routes"] = routes
 
     # 노약자 모드: 도보 구간 시간을 실제 체감 속도에 맞게 늘립니다.
     # (정렬/선택보다 먼저 적용해야, 늘어난 도보 시간 기준으로 "AI 추천 경로"가 뽑혀요.)
