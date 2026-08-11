@@ -50,7 +50,9 @@ def _search_route_in_city(route_nm: str, city_code: str):
         return None
 
     exact = [it for it in item_list if str(it.get("routeno")) == route_nm]
-    chosen = exact[0] if exact else item_list[0]
+    if not exact:
+        return None  # 부분 일치("8140")로 대충 고르지 않고, 정확한 매치가 없으면 실패 처리
+    chosen = exact[0]
     return {
         "routeId": chosen.get("routeid"),
         "routeNo": chosen.get("routeno"),
@@ -170,7 +172,7 @@ def _estimate_congestion(arr_prev_station_cnt):
         return "3", "여유"
 
 
-def get_route_congestion(route_nm: str, city_code: str = None, max_stations: int = 15):
+def get_route_congestion(route_nm: str, city_code: str = None, max_stations: int = 40):
     route_info = get_route_id_by_name(route_nm, city_code)
     if not route_info:
         msg = "해당 노선을 찾을 수 없습니다." if city_code else \
