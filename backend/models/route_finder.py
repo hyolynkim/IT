@@ -180,19 +180,25 @@ def find_cat_optimal_route(start_name, end_name, departure_hour, mode="general")
     
     for path in path_list:
         base_time = path["info"]["totalTime"]
-        transfer_count = path["info"].get("transferCount", 0)
-        
+
         detailed_segments = extract_sub_paths(path)
         has_express_bus = any(
             seg.get("is_express", False)
             for seg in detailed_segments
             if seg["traffic_type"] == 2
         )
-        
+
+        # ODsay가 주는 info.transferCount는 실제로는 거의 항상 0으로 오는 등 신뢰할 수
+        # 없어서("최소 환승" 경로를 골라도 실제로는 갈아타는 구간이 여러 개인 문제가
+        # 있었음), 지하철/버스 탑승 구간(traffic_type 1 또는 2) 개수 - 1로 직접 계산함
+        # (탑승 구간이 N개면 그 사이 환승이 N-1번 있는 셈).
+        transit_leg_count = sum(1 for seg in detailed_segments if seg.get("traffic_type") in (1, 2))
+        transfer_count = max(transit_leg_count - 1, 0)
+
         total_penalty = 0
         if has_express_bus and (8 <= departure_hour <= 10 or 18 <= departure_hour <= 20):
             total_penalty += 30
-            
+
         comfort_time = base_time + total_penalty
 
         # 도보 구간(traffic_type == 3) 소요시간 합계. "최소 도보" 경로를 고를 때 씀
