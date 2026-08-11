@@ -189,6 +189,51 @@ def select_accessibility_routes(routes):
 
     return result
 
+
+def _general_ai_optimal_score(route):
+    """일반 모드 'AI 추천' 1번 — 광역버스 포함 여부 우선, 그다음 소요시간 순."""
+    return (not route.get("has_express_bus", False), route.get("estimated_comfort_time_min", 0))
+
+
+def select_general_routes(routes):
+    """일반 모드에서 화면 탭에 보여줄 경로 최대 6개를, 각각 다른 기준으로 고릅니다.
+
+    - AI 러시아워 3개: "AI 추천"(광역버스 우선+최소시간), "최소 시간", "최소 환승"
+    - 일반 경로 3개: "최소 금액", "최소 도보", "최소 환승"
+    같은 경로가 여러 기준에서 동시에 1등이면(예: 최소시간 경로가 곧 최소환승 경로이기도 함)
+    중복 없이 다음으로 그 기준에 맞는 경로를 대신 고릅니다 — 그래서 실제로 화면에
+    최대 6개의 서로 다른 경로가 각자의 강점과 함께 나타납니다. 후보가 부족하면
+    그만큼 적게 반환합니다 (억지로 6개를 채우지 않음).
+    """
+    if not routes:
+        return []
+
+    chosen_ids = set()
+    result = []
+
+    def pick(label, key_func, category):
+        candidates = [r for r in routes if id(r) not in chosen_ids]
+        if not candidates:
+            return
+        best = min(candidates, key=key_func)
+        chosen_ids.add(id(best))
+        best["category"] = category
+        best["category_label"] = label
+        result.append(best)
+
+    # AI 러시아워 3개
+    pick("AI 추천 경로", _general_ai_optimal_score, "ai_optimal")
+    pick("최소 시간", lambda r: r.get("estimated_comfort_time_min", 0), "ai_fastest")
+    pick("최소 환승", lambda r: r.get("transfer_count", 0), "ai_fewest_transfer")
+
+    # 일반 경로 3개
+    pick("최소 금액", lambda r: r.get("payment_krw", 0), "general_cheapest")
+    pick("최소 도보", lambda r: r.get("walk_time_total_min", 0), "general_least_walk")
+    pick("최소 환승", lambda r: r.get("transfer_count", 0), "general_fewest_transfer")
+
+    return result
+
+
 def is_rush_hour(hour, minute, weekday):
     return True  # 테스트용
 
@@ -479,6 +524,11 @@ def get_optimal_route():
     # 화면에 보여줄 경로를 5개로 좁혀서 확정합니다.
     if mode != 'general' and routes:
         routes = select_accessibility_routes(routes)
+        final_result["routes"] = routes
+    # 일반 모드도 마찬가지로, 그냥 시간순 상위 N개가 아니라 "AI 추천/최소시간/최소환승"
+    # + "최소금액/최소도보/최소환승" 각각 다른 기준의 대표 경로 최대 6개로 좁힙니다.
+    elif mode == 'general' and routes:
+        routes = select_general_routes(routes)
         final_result["routes"] = routes
 
     rush_hour = is_rush_hour(hour, minute, weekday)

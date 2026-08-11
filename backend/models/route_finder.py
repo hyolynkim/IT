@@ -194,13 +194,20 @@ def find_cat_optimal_route(start_name, end_name, departure_hour, mode="general")
             total_penalty += 30
             
         comfort_time = base_time + total_penalty
-        
+
+        # 도보 구간(traffic_type == 3) 소요시간 합계. "최소 도보" 경로를 고를 때 씀
+        # (예전엔 이 필드가 아예 없어서 walk_time_total_min 기준 정렬이 항상 0으로만 비교됐음).
+        walk_time_total_min = sum(
+            seg.get("section_time_min", 0) for seg in detailed_segments if seg.get("traffic_type") == 3
+        )
+
         refined_paths.append({
             "path_type": path["pathType"],
             "original_time_min": base_time,
             "estimated_comfort_time_min": comfort_time,
             "payment_krw": path["info"].get("payment", 0),
             "transfer_count": transfer_count,
+            "walk_time_total_min": walk_time_total_min,
             "has_express_bus": has_express_bus,
             "first_start_station": path["info"].get("firstStartStation", ""),
             "last_end_station": path["info"].get("lastEndStation", ""),

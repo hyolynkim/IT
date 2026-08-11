@@ -1255,6 +1255,13 @@ function RouteResultScreen() {
   const isRushHour = data?.is_rush_hour;
 
   const getRouteLabel = (idx: number) => {
+    // 백엔드(select_general_routes/select_accessibility_routes)가 각 경로에
+    // "AI 추천 경로", "최소 시간", "최소 환승", "최소 금액", "최소 도보" 등
+    // 실제 그 경로의 특징을 나타내는 category_label을 붙여서 내려줌 — 그걸 그대로 씀.
+    // (예전엔 이 값을 안 쓰고 그냥 "AI 러시아워 N / 일반 경로 N"으로 번호만 매겼었음)
+    const label = routes[idx]?.category_label;
+    if (label) return label;
+
     if (isRushHour && idx < 3) return `AI 러시아워 ${idx + 1}`;
     const generalIdx = isRushHour ? idx - 3 + 1 : idx + 1;
     return `일반 경로 ${generalIdx}`;
