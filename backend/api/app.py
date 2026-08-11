@@ -274,8 +274,26 @@ def select_general_routes(routes):
     return result
 
 
+def _is_weekend_ish(weekday):
+    """weekday: 0=월 ... 6=일 (App.tsx의 currentWeekday 변환과 동일한 규칙).
+    금/토/일은 밤 시간대에도 러시아워 한 타임이 더 있음."""
+    return weekday in (4, 5, 6)  # 금, 토, 일
+
 def is_rush_hour(hour, minute, weekday):
-    return True  # 테스트용
+    """AI 러시아워 추천(AI 추천 경로/여유 경로/최소 환승)이 적용되는 시간대인지
+    판단합니다. 이 시간대가 아니면 일반 지도앱처럼 그냥 스펙 기준 경로만 나갑니다.
+
+    - 월~목: 새벽 05:30~07:30, 오후 16:30~19:30
+    - 금~일: 새벽 05:30~07:30, 오후 16:30~19:30, 밤 21:00~23:00 (한 타임 더)
+    """
+    total_min = hour * 60 + minute
+    morning = 5 * 60 + 30 <= total_min <= 7 * 60 + 30
+    evening = 16 * 60 + 30 <= total_min <= 19 * 60 + 30
+    if morning or evening:
+        return True
+    if _is_weekend_ish(weekday) and 21 * 60 <= total_min <= 23 * 60:
+        return True
+    return False
 
 def get_weekday_korean(weekday):
     days = ["월요일", "화요일", "수요일", "목요일", "금요일", "토요일", "일요일"]
@@ -287,7 +305,7 @@ def get_rush_hour_type(hour, minute, weekday):
         return "출근 러시아워"
     elif 16 * 60 + 30 <= total_min <= 19 * 60 + 30:
         return "퇴근 러시아워"
-    elif 21 * 60 <= total_min <= 23 * 60:
+    elif _is_weekend_ish(weekday) and 21 * 60 <= total_min <= 23 * 60:
         return "심야 러시아워"
     return "러시아워"
 
@@ -567,25 +585,30 @@ def get_optimal_route():
     if mode != 'general' and routes:
         routes = select_accessibility_routes(routes)
         final_result["routes"] = routes
-    # 일반 모드도 마찬가지로, 그냥 시간순 상위 N개가 아니라 "AI 추천/최소시간/최소환승"
-    # + "최소금액/최소도보/최소환승" 각각 다른 기준의 대표 경로 최대 6개로 좁힙니다.
+    # 일반 모드는 "AI 러시아워 추천"이 실제 러시아워 시간대에만 적용되도록 합니다.
+    # 러시아워가 아니면 AI 추천/여유 경로 같은 카테고리 없이 그냥 원래 정렬 순서
+    # (광역버스 우선 + 최소시간) 상위 6개만 보여줍니다 — category_label을 안 붙이면
+    # 프론트가 전부 "일반 경로 N"으로 표시합니다.
     elif mode == 'general' and routes:
-        if rush_hour and GENERAL_ROUTE_AVAILABLE:
-            # select_general_routes가 "혼잡 위험 있는 경로는 AI 추천에서 제외"하려면
-            # 고르기 전에 여석 정보가 이미 채워져 있어야 함 — 그래서 여기서 (예전엔
-            # 최종 선택된 6개에 대해서만 하던 걸) 더 넓은 후보 풀에 대해 먼저 계산함.
-            # 후보 전체(최대 20개 안팎)를 다 하면 느려지니, comfort_time 기준으로
-            # 이미 정렬돼 있는 상위 10개 정도로 범위를 좁힘 — 같은 정류소/버스
-            # 조합은 bus_congestion_cache로 재사용해서 GBIS 중복 호출도 줄임.
-            bus_congestion_cache = {}
-            candidate_pool = routes[:10]
-            for r in candidate_pool:
-                r["sub_paths"] = get_bus_occupancy_for_route(
-                    r.get("sub_paths", []), cache=bus_congestion_cache
-                )
-            routes = select_general_routes(candidate_pool)
+        if rush_hour:
+            if GENERAL_ROUTE_AVAILABLE:
+                # select_general_routes가 "혼잡 위험 있는 경로는 AI 추천에서 제외"하려면
+                # 고르기 전에 여석 정보가 이미 채워져 있어야 함 — 그래서 여기서 (예전엔
+                # 최종 선택된 6개에 대해서만 하던 걸) 더 넓은 후보 풀에 대해 먼저 계산함.
+                # 후보 전체(최대 20개 안팎)를 다 하면 느려지니, comfort_time 기준으로
+                # 이미 정렬돼 있는 상위 10개 정도로 범위를 좁힘 — 같은 정류소/버스
+                # 조합은 bus_congestion_cache로 재사용해서 GBIS 중복 호출도 줄임.
+                bus_congestion_cache = {}
+                candidate_pool = routes[:10]
+                for r in candidate_pool:
+                    r["sub_paths"] = get_bus_occupancy_for_route(
+                        r.get("sub_paths", []), cache=bus_congestion_cache
+                    )
+                routes = select_general_routes(candidate_pool)
+            else:
+                routes = select_general_routes(routes)
         else:
-            routes = select_general_routes(routes)
+            routes = routes[:6]
         final_result["routes"] = routes
 
     # 교통약자 모드(mode != 'general')일 때만 엘리베이터 인접 하차칸 정보를 조회합니다.
