@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef } from "react";
 
 const API_BASE = "https://subway-congestion-api.onrender.com";
-const ROUTE_API_BASE = "http://localhost:5000";
+const ROUTE_API_BASE = "https://yeoyuro-backend.onrender.com";
 
 declare global { interface Window { kakao: any; } }
 
@@ -881,7 +881,7 @@ function RouteResultScreen() {
   const selectedElevatorInfo = data?.elevator_info_list?.[selectedIdx];
   // 교통약자석 칸 안내 — 실제 데이터(priority_seats.csv)가 채워지기 전까지는 항상 비어있어요
   const selectedPrioritySeatInfo = data?.priority_seat_info_list?.[selectedIdx];
-  // 버스 구간 평균 혼잡도 (서울시 승하차 인원 데이터 기반 — services/general_route.py 참고)
+  // 버스 구간 평균 혼잡도 (서울시 승하차 인원 데이터 기반 — bus_congestion.py 참고)
   const selectedBusOccupancyList: any[] = data?.bus_occupancy_list?.[selectedIdx] ?? [];
   const getBusOccupancyForLeg = (laneName: string, startName: string, endName: string) =>
     selectedBusOccupancyList.find(
@@ -891,6 +891,12 @@ function RouteResultScreen() {
   const selectedCongestionTrendList: any[] = data?.subway_congestion_trend_list?.[selectedIdx] ?? [];
   const getCongestionTrendForStation = (station: string) =>
     selectedCongestionTrendList.find((t: any) => t.station === station);
+  // 버스 구간별 "다음 정시 혼잡도 변화" 안내
+  const selectedBusCongestionTrendList: any[] = data?.bus_congestion_trend_list?.[selectedIdx] ?? [];
+  const getBusCongestionTrendForLeg = (laneName: string, startName: string, endName: string) =>
+    selectedBusCongestionTrendList.find(
+      (t: any) => t.lane_name === laneName && t.start_name === startName && t.end_name === endName
+    );
   // 지금 선택된 경로의 "모든" 환승 지점 목록 (환승이 여러 번 있으면 원소도 여러 개)
   const selectedTransferInfoList: any[] = data?.transfer_info_list?.[selectedIdx] ?? [];
   const getTransferInfoForStation = (station: string) =>
@@ -1077,6 +1083,9 @@ function RouteResultScreen() {
                     const thisLegCongestionTrend = sub.traffic_type === 1
                       ? getCongestionTrendForStation(sub.start_name)
                       : null;
+                    const thisLegBusCongestionTrend = sub.traffic_type === 2
+                      ? getBusCongestionTrendForLeg(sub.lane_name, sub.start_name, sub.end_name)
+                      : null;
 
                     return (
                     <div key={sIdx} className="flex flex-col">
@@ -1124,6 +1133,30 @@ function RouteResultScreen() {
                         </div>
                       )}
 
+                      {isAccessibilityMode && sub.traffic_type === 2 && thisLegBusCongestionTrend && (
+                        <div className={`ml-[76px] mt-2 border rounded-lg p-2.5 ${
+                          thisLegBusCongestionTrend.direction === "up"
+                            ? "bg-red-50 border-red-200"
+                            : "bg-green-50 border-green-200"
+                        }`}>
+                          <p className={`text-xs leading-relaxed ${
+                            thisLegBusCongestionTrend.direction === "up" ? "text-red-800" : "text-green-800"
+                          }`}>
+                            {thisLegBusCongestionTrend.direction === "up" ? "⚠️" : "🟢"}{" "}
+                            {thisLegBusCongestionTrend.minutes_until_next}분 후면 혼잡도가{" "}
+                            <b>{Math.abs(thisLegBusCongestionTrend.diff_pct)}%</b>{" "}
+                            {thisLegBusCongestionTrend.direction === "up" ? "더 올라요" : "더 낮아져요"}
+                          </p>
+                          {thisLegBusCongestionTrend.recommendation && (
+                            <p className={`text-xs font-semibold mt-1 ${
+                              thisLegBusCongestionTrend.direction === "up" ? "text-red-900" : "text-green-900"
+                            }`}>
+                              💡 {thisLegBusCongestionTrend.recommendation}
+                            </p>
+                          )}
+                        </div>
+                      )}
+
                       {isAccessibilityMode && sub.traffic_type === 1 && thisLegCongestionTrend && (
                         <div className={`ml-[76px] mt-2 border rounded-lg p-2.5 ${
                           thisLegCongestionTrend.direction === "up"
@@ -1138,6 +1171,13 @@ function RouteResultScreen() {
                             <b>{Math.abs(thisLegCongestionTrend.diff_pct)}%</b>{" "}
                             {thisLegCongestionTrend.direction === "up" ? "더 올라요" : "더 낮아져요"}
                           </p>
+                          {thisLegCongestionTrend.recommendation && (
+                            <p className={`text-xs font-semibold mt-1 ${
+                              thisLegCongestionTrend.direction === "up" ? "text-red-900" : "text-green-900"
+                            }`}>
+                              💡 {thisLegCongestionTrend.recommendation}
+                            </p>
+                          )}
                         </div>
                       )}
 
