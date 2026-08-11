@@ -1,16 +1,3 @@
-"""
-버스 실시간(에 가까운) 혼잡도 — 서울시 공개 데이터 기반
-
-⚠️ "실시간"은 아니고, 서울시가 공개한 "버스노선별 정류장별 시간대별
-승하차 인원 정보"(월별 집계, bus_ridership.csv)를 씁니다. 정류장별 좌석 수를
-모르기 때문에 정확한 여석 %는 계산할 수 없고, 그 대신 "그 노선·정류장·시간대에
-평균적으로 몇 명이 타는지"를 보고 혼잡도 등급(여유/보통/혼잡)을 근사해서 알려줍니다.
-
-일반경로팀이 실제 실시간 여석 API를 연동한 파일을 넘겨주면, 이 파일을
-그대로 덮어쓰기만 하면 돼요 — app.py 쪽 코드는 손댈 필요 없습니다
-(함수 이름과 인자만 맞으면 됩니다).
-"""
-
 import os
 import csv
 
@@ -126,13 +113,14 @@ def get_bus_occupancy_for_route(sub_paths, hour=9, minute=0):
                             pass
                 if values:
                     avg_boarding = sum(values) / len(values)
-                    occupancy.append({
-                        "lane_name": seg.get("lane_name", ""),
-                        "start_name": seg.get("start_name", ""),
-                        "end_name": seg.get("end_name", ""),
-                        "congestion": _congestion_label(avg_boarding),
-                        "avg_boarding_count": round(avg_boarding),
-                    })
+                    if avg_boarding > 0:  # 0명이면 그 시간대엔 사실상 데이터가 없는 것 — 안내 안 함
+                        occupancy.append({
+                            "lane_name": seg.get("lane_name", ""),
+                            "start_name": seg.get("start_name", ""),
+                            "end_name": seg.get("end_name", ""),
+                            "congestion": _congestion_label(avg_boarding),
+                            "avg_boarding_count": round(avg_boarding),
+                        })
 
         elapsed += seg.get("section_time_min", 0)
 
@@ -206,10 +194,12 @@ def get_bus_congestion_trend_for_route(sub_paths, hour, minute):
                                 "diff_pct": diff_pct,
                                 "direction": "up" if diff_pct > 0 else "down",
                                 "minutes_until_next": minutes_until_next,
-                                # 혼잡도가 내려가는 중이면 기다렸다 이동, 올라가는 중이면 지금 이동을 추천
+                                # 혼잡도가 내려가는 중이고, 기다리는 시간이 30분 미만일 때만
+                                # "기다렸다 이동"을 추천 (그 이상 기다리라는 건 비현실적인 조언이라)
                                 "recommendation": (
                                     f"{minutes_until_next}분 후에 이동하는 것을 추천합니다"
-                                    if diff_pct < 0 else "지금 이동하는 것을 추천합니다"
+                                    if diff_pct < 0 and minutes_until_next < 30
+                                    else "지금 이동하는 것을 추천합니다"
                                 ),
                             })
 
@@ -219,9 +209,6 @@ def get_bus_congestion_trend_for_route(sub_paths, hour, minute):
 
 
 def get_gemini_general_recommendation(routes, occupancy_data, start, end, hour, minute, weekday):
-    """일반 모드용 추천 결과를 반환합니다.
-    ⚠️ 실제 Gemini 연동 전이라, 추천 순위는 항상 0번(첫 번째 경로)으로 고정하고,
-    혼잡도가 있으면 그중 가장 붐비는 구간을 팁으로 짧게 안내합니다."""
     if not routes:
         return {
             "recommended_index": 0,
