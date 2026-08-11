@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef } from "react";
 
 const API_BASE = "https://subway-congestion-api.onrender.com";
-const ROUTE_API_BASE = "http://localhost:5000";
+const ROUTE_API_BASE = "https://yeoyuro-backend.onrender.com";
 
 declare global { interface Window { kakao: any; } }
 
