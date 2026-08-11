@@ -70,12 +70,88 @@ def _boarding_column(hour):
     return f"{h}시승차총승객수"
 
 
+def _alighting_column(hour):
+    h = hour % 24
+    if h == 0:
+        return "00시하차총승객수"
+    return f"{h}시하차총승객수"
+
+
 def _congestion_label(boarding_count):
     if boarding_count < _LOW_THRESHOLD:
         return "여유"
     if boarding_count < _HIGH_THRESHOLD:
         return "보통"
     return "혼잡"
+
+
+def is_bus_operating_at(route_no, station, hour):
+    """해당 버스 노선이 그 정류장·시간대에 실제로 운행하는지 확인합니다.
+
+    1) "N"으로 시작하는 노선(N37, N31 등)은 전부 심야버스입니다. 심야
+       시간대(23시~04시)가 아니면, 데이터를 볼 것도 없이 바로 "운행 안 함"으로
+       판단합니다 (심야버스는 낮에 절대 운행하지 않으니까요).
+    2) 그 외 노선은, 승차·하차 인원이 등록된 모든 행에서 전부 0이면
+       "운행 안 함"으로 판단합니다.
+
+    데이터 자체가 없거나 유효한 숫자를 하나도 못 찾으면, 판단할 근거가 없는
+    거라 True(운행한다고 가정)를 반환해서 잘못 걸러내는 걸 방지합니다."""
+    NIGHT_BUS_HOURS = {23, 0, 1, 2, 3, 4}
+    if route_no.strip().upper().startswith("N") and (hour % 24) not in NIGHT_BUS_HOURS:
+        return False
+
+    data = _load_bus_ridership()
+    if not data:
+        return True
+
+    rows = data.get((route_no, station))
+    if not rows:
+        return True
+
+    board_col = _boarding_column(hour)
+    alight_col = _alighting_column(hour)
+
+    found_valid_data = False
+    for row in rows:
+        raw_board = row.get(board_col)
+        raw_alight = row.get(alight_col)
+        if raw_board in (None, "") or raw_alight in (None, ""):
+            continue
+        try:
+            board = int(raw_board)
+            alight = int(raw_alight)
+        except ValueError:
+            continue
+        found_valid_data = True
+        if board > 0 or alight > 0:
+            return True  # 하나라도 승하차 흔적이 있으면 운행 중인 것으로 판단
+
+    if not found_valid_data:
+        return True  # 판단할 데이터가 없음 — 걸러내지 않음
+
+    return False  # 유효한 데이터가 있었는데 전부 0이었음 = 그 시간대엔 운행 안 함
+
+
+def route_has_non_operating_bus(sub_paths, hour, minute):
+    """경로 안에, 실제로 도달하는 시각 기준으로 운행하지 않는 버스 구간이
+    하나라도 있으면 True를 반환합니다. (검색 시각 + 그 전까지의 이동 시간을
+    누적해서, 그 버스 구간에 실제로 도달하는 시각을 기준으로 판단합니다.)"""
+    elapsed = 0
+    base_total_min = hour * 60 + minute
+    for seg in sub_paths:
+        if seg.get("traffic_type") == 2:
+            leg_total_min = (base_total_min + elapsed) % (24 * 60)
+            leg_hour = leg_total_min // 60
+
+            route_no = (seg.get("lane_name") or "").strip()
+            station = (seg.get("start_name") or "").strip()
+            if route_no and station:
+                if not is_bus_operating_at(route_no, station, leg_hour):
+                    return True
+
+        elapsed += seg.get("section_time_min", 0)
+
+    return False
 
 
 def get_bus_occupancy_for_route(sub_paths, hour=9, minute=0):
@@ -184,7 +260,11 @@ def get_bus_congestion_trend_for_route(sub_paths, hour, minute):
                     next_avg = sum(next_values) / len(next_values)
                     if cur_avg != 0:  # 0명이면 "몇 % 변화"가 의미가 없어서 건너뜁니다.
                         diff_pct = round((next_avg - cur_avg) / cur_avg * 100)
-                        if diff_pct != 0:
+                        # 다음 버스가 15분 이내에 올 때만 "오른다/낮아진다" 안내 자체를
+                        # 보여줍니다 (버스 데이터는 1시간 단위라, 그보다 멀면 지금 알려줘도
+                        # 실용성이 떨어져서요). 그 안에서, 낮아지는 경우에만 "N분 후
+                        # 이동"을 추천하고, 오르는 경우엔 안내만 하고 추천 문구는 안 씁니다.
+                        if diff_pct != 0 and minutes_until_next <= 15:
                             trends.append({
                                 "lane_name": seg.get("lane_name", ""),
                                 "start_name": seg.get("start_name", ""),
@@ -194,12 +274,9 @@ def get_bus_congestion_trend_for_route(sub_paths, hour, minute):
                                 "diff_pct": diff_pct,
                                 "direction": "up" if diff_pct > 0 else "down",
                                 "minutes_until_next": minutes_until_next,
-                                # 혼잡도가 내려가는 중이고, 기다리는 시간이 30분 미만일 때만
-                                # "기다렸다 이동"을 추천 (그 이상 기다리라는 건 비현실적인 조언이라)
                                 "recommendation": (
                                     f"{minutes_until_next}분 후에 이동하는 것을 추천합니다"
-                                    if diff_pct < 0 and minutes_until_next < 30
-                                    else "지금 이동하는 것을 추천합니다"
+                                    if diff_pct < 0 else None
                                 ),
                             })
 
@@ -209,6 +286,9 @@ def get_bus_congestion_trend_for_route(sub_paths, hour, minute):
 
 
 def get_gemini_general_recommendation(routes, occupancy_data, start, end, hour, minute, weekday):
+    """일반 모드용 추천 결과를 반환합니다.
+    ⚠️ 실제 Gemini 연동 전이라, 추천 순위는 항상 0번(첫 번째 경로)으로 고정하고,
+    혼잡도가 있으면 그중 가장 붐비는 구간을 팁으로 짧게 안내합니다."""
     if not routes:
         return {
             "recommended_index": 0,
