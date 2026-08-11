@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef } from "react";
 
 const API_BASE = "https://subway-congestion-api.onrender.com";
-const ROUTE_API_BASE = "https://yeoyuro-backend.onrender.com";
+const ROUTE_API_BASE = "http://localhost:5000";
 
 declare global { interface Window { kakao: any; } }
 
@@ -1137,9 +1137,6 @@ function RouteResultScreen() {
                               : "text-green-800"
                           }`}>
                             🚌 평균 혼잡도: <b>{thisLegBusOccupancy.congestion}</b>
-                            {typeof thisLegBusOccupancy.avg_boarding_count === "number"
-                              ? ` (이 시간대 평균 탑승 약 ${thisLegBusOccupancy.avg_boarding_count}명)`
-                              : ""}
                           </p>
                         </div>
                       )}
@@ -1183,8 +1180,7 @@ function RouteResultScreen() {
                               ? "text-amber-800"
                               : "text-green-800"
                           }`}>
-                            🚇 평균 혼잡도: <b>{thisLegSubwayCongestion.congestion}</b>{" "}
-                            ({thisLegSubwayCongestion.current_pct}%)
+                            🚇 평균 혼잡도: <b>{thisLegSubwayCongestion.congestion}</b>
                           </p>
                         </div>
                       )}
