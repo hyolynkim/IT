@@ -6,7 +6,6 @@ sys.path.append(BASE_DIR)
 
 from api.gbis_service import get_bus_arrival  # 저번에 만든 GBIS 호출 함수 재사용
 
-import requests
 import json
 
 
@@ -48,47 +47,39 @@ def classify_bus_crowding(bus: dict) -> dict:
 
 from api.gbis_service import get_bus_arrival, get_station_id_by_name
 
-def get_bus_occupancy_for_route(sub_paths):
-    """경로의 각 버스 구간(첫 정류소 기준)에 대해 GBIS 여석 정보를 조회."""
-    bus_legs = [s for s in sub_paths if s.get("traffic_type") == 2]
-    occupancy_list = []
+try:
+    import anthropic
+    _ANTHROPIC_AVAILABLE = True
+except ImportError:
+    _ANTHROPIC_AVAILABLE = False
 
-    for leg in bus_legs:
-        station_name = leg.get("start_name")
-        route_name = leg.get("lane_name")  # 버스 번호
-        lat = leg.get("start_lat")
-        lng = leg.get("start_lng")
+_anthropic_client = None
+CLAUDE_RUSH_HOUR_MODEL = "claude-haiku-4-5"
 
-        if not station_name or not route_name:
-            continue
+_RUSH_HOUR_TIP_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "recommended_index": {"type": "integer"},
+        "rush_hour_tip": {"type": "string"},
+        "alternative": {"type": "string"},
+    },
+    "required": ["recommended_index", "rush_hour_tip", "alternative"],
+    "additionalProperties": False,
+}
 
-        station_id = get_station_id_by_name(station_name, lat, lng)
-        if not station_id:
-            continue
 
-        arrival_data = get_bus_arrival(station_id)
-        if "error" in arrival_data:
-            continue
-
-        matched_bus = next(
-            (b for b in arrival_data.get("buses", []) if b.get("routeName") == route_name),
-            None
-        )
-        if matched_bus:
-            crowding = classify_bus_crowding(matched_bus)
-            occupancy_list.append({
-                "routeName": route_name,
-                "station": station_name,
-                **matched_bus,
-                **crowding,
-            })
-
-    return occupancy_list
+def _get_anthropic_client():
+    global _anthropic_client
+    if _anthropic_client is None:
+        _anthropic_client = anthropic.Anthropic()  # ANTHROPIC_API_KEY 환경변수에서 읽음
+    return _anthropic_client
 
 
 def get_gemini_general_recommendation(routes, occupancy_data, start, end, hour, minute, weekday):
-    GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
-    if not GEMINI_API_KEY:
+    """이름은 예전 Gemini 시절 그대로 유지했지만(앱 코드에서 이 이름으로
+    import함) 실제로는 Claude(Anthropic API)를 호출함 — Gemini는 무료
+    할당량이 0으로 막혀 있어서(계정/결제 설정 문제) Claude로 교체."""
+    if not _ANTHROPIC_AVAILABLE or not os.environ.get("ANTHROPIC_API_KEY"):
         return {
             "recommended_index": 0,
             "rush_hour_tip": "API 키 설정 후 러시아워 분석이 제공됩니다.",
@@ -103,31 +94,35 @@ def get_gemini_general_recommendation(routes, occupancy_data, start, end, hour, 
             "\n혼잡한 버스라면 다음 정거장 탑승이나 대안을 rush_hour_tip에 반영해주세요."
         )
 
-    prompt = f"""
-당신은 한국 수도권 대중교통 러시아워 전문가입니다.
+    prompt = f"""당신은 한국 수도권 대중교통 러시아워 전문가입니다.
 
 출발지: {start} / 도착지: {end} / 시각: {hour}시 {minute}분
 {occupancy_note}
 
-반드시 아래 JSON 형식으로만 응답 (다른 텍스트 없이):
-{{
-  "recommended_index": 0,
-  "rush_hour_tip": "구체적인 러시아워 팁 (한국어, 2문장)",
-  "alternative": "대안 제안 (한국어, 없으면 빈 문자열)"
-}}
-"""
-
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={GEMINI_API_KEY}"
-    payload = {"contents": [{"parts": [{"text": prompt}]}], "generationConfig": {"temperature": 0.3, "maxOutputTokens": 500}}
+recommended_index, rush_hour_tip(한국어, 2문장), alternative(한국어, 없으면 빈 문자열)를 채워 응답하세요."""
 
     try:
-        response = requests.post(url, json=payload, timeout=10)
-        result = response.json()
-        text = result["candidates"][0]["content"]["parts"][0]["text"]
-        text = text.strip().replace("```json", "").replace("```", "").strip()
+        client = _get_anthropic_client()
+        response = client.messages.create(
+            model=CLAUDE_RUSH_HOUR_MODEL,
+            max_tokens=500,
+            output_config={"format": {"type": "json_schema", "schema": _RUSH_HOUR_TIP_SCHEMA}},
+            messages=[{"role": "user", "content": prompt}],
+        )
+        text = response.content[0].text
         return json.loads(text)
+    except anthropic.APIStatusError as e:
+        print(f"[Claude] 호출 실패 ({e.status_code}): {e.message}", flush=True)
+        return {
+            "recommended_index": 0,
+            "rush_hour_tip": f"분석 중 오류: Claude API {e.status_code} - {e.message}",
+            "alternative": "",
+        }
     except Exception as e:
+        print(f"[Claude] 예외 발생: {e}", flush=True)
         return {"recommended_index": 0, "rush_hour_tip": f"분석 중 오류: {e}", "alternative": ""}
+
+
 def get_bus_occupancy_for_route(sub_paths, cache=None):
     """경로의 각 버스 구간(첫 정류소 기준)에 GBIS 여석 정보를 조회해
     sub_paths의 bus_congestion 필드를 직접 채운다 (in-place).

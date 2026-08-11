@@ -1,7 +1,5 @@
 from flask import Flask, request, jsonify
 from flask_cors import CORS
-from tago_service import get_route_congestion
-from bus_congestion import CongestionEstimator
 import os
 import re
 import sys
@@ -9,16 +7,20 @@ import requests, time
 import json
 from dataclasses import asdict
 
-est = CongestionEstimator()  
-
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.append(BASE_DIR)
 
 # gunicorn이 'api.app:app'처럼 패키지 경로로 이 모듈을 import할 때는
 # (python app.py로 직접 실행할 때와 달리) 이 파일이 있는 api/ 폴더 자체가
-# import 경로에 안 잡혀서, 같은 폴더의 subway_guide 등을 못 찾는 문제가 있었음.
+# import 경로에 안 잡혀서, 같은 폴더의 subway_guide/tago_service/bus_congestion
+# 등을 못 찾는 문제가 있었음. 그래서 이 sys.path.append 이후에만 그 모듈들을 import해야 함.
 API_DIR = os.path.dirname(os.path.abspath(__file__))
 sys.path.append(API_DIR)
+
+from tago_service import get_route_congestion
+from bus_congestion import CongestionEstimator
+
+est = CongestionEstimator()
 
 from models.route_finder import find_cat_optimal_route
 
@@ -503,17 +505,32 @@ def get_optimal_route():
     if rush_hour and routes:
         if mode == 'general':
             if GENERAL_ROUTE_AVAILABLE:
-                # 화면 탭에 보이는 후보 경로 여러 개(최대 5개)에 여석 정보를 채워줍니다.
+                # 화면 탭에 보이는 후보 경로(AI 러시아워 3개 + 일반 경로 3개 = 최대 6개,
+                # 프론트 RouteResultScreen의 list.slice(0, 6)과 맞춤)에 여석 정보를 채워줍니다.
                 # (예전엔 routes[0]에만 채워서 다른 경로 탭을 선택하면 여석 뱃지가 안 보였음)
                 # 같은 정류소/버스 조합은 bus_congestion_cache로 재사용해 GBIS 중복 호출을
                 # 줄임 — 안 그러면 경로 수 × 버스 구간 수만큼 순차 호출이 쌓여 타임아웃 남.
                 bus_congestion_cache = {}
-                for r in routes[:5]:
+                for r in routes[:6]:
                     r["sub_paths"] = get_bus_occupancy_for_route(
                         r.get("sub_paths", []), cache=bus_congestion_cache
                     )
+                # get_gemini_general_recommendation은 occupancy_data가
+                # [{routeName, station, label}, ...] 형태이길 기대함 — 위에서
+                # sub_paths에 채운 bus_congestion 필드로부터 그 형태를 다시 만들어줌
+                # (sub_paths 자체를 그대로 넘기면 도보/지하철 구간엔 routeName이
+                # 없어서 KeyError로 500이 났었음).
+                occupancy_data = [
+                    {
+                        "routeName": leg.get("lane_name"),
+                        "station": leg.get("start_name"),
+                        "label": leg["bus_congestion"]["label"],
+                    }
+                    for leg in routes[0].get("sub_paths", [])
+                    if leg.get("traffic_type") == 2 and leg.get("bus_congestion")
+                ]
                 rush_hour_result = get_gemini_general_recommendation(
-                    routes, routes[0]["sub_paths"], start, end, hour, minute, weekday
+                    routes, occupancy_data, start, end, hour, minute, weekday
                 )
         else:
             # 교통약자 모드: 기존 로직 + 엘리베이터 정보 + 환승 정보 + 노약자/임산부 여부 반영
