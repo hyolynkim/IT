@@ -838,7 +838,7 @@ function CongestionTab() {
       <div className="flex items-center gap-2 mt-2">
         <input
           type="text"
-          placeholder="버스 번호 입력 (예: 140)"
+          placeholder="버스 번호 검색 (예: 140)"
           value={busQuery}
           onChange={(e) => handleBusQueryChange(e.target.value)}
           onKeyDown={(e) => { if (e.key === "Enter") handleBusSearch(); }}
