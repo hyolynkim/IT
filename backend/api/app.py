@@ -190,20 +190,26 @@ def select_accessibility_routes(routes):
     return result
 
 
-def _general_ai_optimal_score(route):
-    """일반 모드 'AI 추천' 1번 — 광역버스 포함 여부 우선, 그다음 소요시간 순."""
-    return (not route.get("has_express_bus", False), route.get("estimated_comfort_time_min", 0))
-
-
 def select_general_routes(routes):
     """일반 모드에서 화면 탭에 보여줄 경로 최대 6개를, 각각 다른 기준으로 고릅니다.
 
-    - AI 러시아워 3개: "AI 추천"(광역버스 우선+최소시간), "최소 시간", "최소 환승"
-    - 일반 경로 3개: "최소 금액", "최소 도보", "최소 환승"
-    같은 경로가 여러 기준에서 동시에 1등이면(예: 최소시간 경로가 곧 최소환승 경로이기도 함)
-    중복 없이 다음으로 그 기준에 맞는 경로를 대신 고릅니다 — 그래서 실제로 화면에
-    최대 6개의 서로 다른 경로가 각자의 강점과 함께 나타납니다. 후보가 부족하면
-    그만큼 적게 반환합니다 (억지로 6개를 채우지 않음).
+    여유로는 "그냥 가장 빠른 경로"를 보여주는 일반 지도앱과 다르게, 시간이 조금
+    더 걸리더라도 실제로 탈 수 있고 쾌적한 경로를 우선 보여주는 게 목표입니다.
+    그래서 AI 쪽과 일반 쪽의 기준을 아예 다르게 나눴습니다 — 겹치는 기준이 없어야
+    "AI가 판단한 게 일반 경로랑 뭐가 다른가"가 실제로 드러납니다.
+
+    - AI 러시아워 3개 (쾌적/탑승 가능성 중심):
+      "AI 추천 경로" — estimated_comfort_time_min(광역버스 러시아워 지연 페널티까지
+        반영된 체감 소요시간) 기준. 그냥 빠른 게 아니라 실제 상황을 반영한 최적.
+      "여유 경로" — 만석 위험이 큰 광역버스(has_express_bus)에 아예 의존하지 않는
+        경로 중 가장 빠른 것. 시간이 더 걸려도 확실히 탈 수 있는 경로.
+      "최소 환승" — transfer_count 최소.
+    - 일반 경로 3개 (스펙만 보는, 다른 지도앱과 같은 기준):
+      "최소 시간"(original_time_min, 쾌적함 고려 없는 순수 소요시간),
+      "최소 금액"(payment_krw), "최소 도보"(walk_time_total_min).
+
+    같은 경로가 여러 기준에서 동시에 1등이면 중복 없이 다음 후보로 넘어갑니다.
+    후보가 부족하면 그만큼 적게 반환합니다 (억지로 6개를 채우지 않음).
     """
     if not routes:
         return []
@@ -211,8 +217,14 @@ def select_general_routes(routes):
     chosen_ids = set()
     result = []
 
-    def pick(label, key_func, category):
+    def pick(label, key_func, category, filter_func=None):
         candidates = [r for r in routes if id(r) not in chosen_ids]
+        if filter_func:
+            # 조건에 맞는 후보가 있으면 그 안에서만 고르고, 하나도 없으면(예: 후보
+            # 전부 광역버스 포함) 어쩔 수 없이 전체 후보 중에서 고름.
+            narrowed = [r for r in candidates if filter_func(r)]
+            if narrowed:
+                candidates = narrowed
         if not candidates:
             return
         best = min(candidates, key=key_func)
@@ -221,15 +233,20 @@ def select_general_routes(routes):
         best["category_label"] = label
         result.append(best)
 
-    # AI 러시아워 3개
-    pick("AI 추천 경로", _general_ai_optimal_score, "ai_optimal")
-    pick("최소 시간", lambda r: r.get("estimated_comfort_time_min", 0), "ai_fastest")
+    # AI 러시아워 3개 — 쾌적/탑승 가능성 중심
+    pick("AI 추천 경로", lambda r: r.get("estimated_comfort_time_min", 0), "ai_optimal")
+    pick(
+        "여유 경로",
+        lambda r: r.get("estimated_comfort_time_min", 0),
+        "ai_comfortable",
+        filter_func=lambda r: not r.get("has_express_bus", False),
+    )
     pick("최소 환승", lambda r: r.get("transfer_count", 0), "ai_fewest_transfer")
 
-    # 일반 경로 3개
+    # 일반 경로 3개 — 스펙만 보는 기준 (쾌적함 고려 없음, 다른 지도앱과 같은 관점)
+    pick("최소 시간", lambda r: r.get("original_time_min", 0), "general_fastest")
     pick("최소 금액", lambda r: r.get("payment_krw", 0), "general_cheapest")
     pick("최소 도보", lambda r: r.get("walk_time_total_min", 0), "general_least_walk")
-    pick("최소 환승", lambda r: r.get("transfer_count", 0), "general_fewest_transfer")
 
     return result
 
