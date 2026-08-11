@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef } from "react";
 
 const API_BASE = "https://subway-congestion-api.onrender.com";
-const ROUTE_API_BASE = "https://yeoyuro-backend.onrender.com";
+const ROUTE_API_BASE = "http://localhost:5000";
 
 declare global { interface Window { kakao: any; } }
 
@@ -264,6 +264,8 @@ function SearchModal({ onClose }: { onClose: () => void }) {
   const [isLocating, setIsLocating] = useState(false);
   const [isElderlySelected, setIsElderlySelected] = useState(false);
   const [isPregnantSelected, setIsPregnantSelected] = useState(false);
+  const [walkSpeed, setWalkSpeed] = useState<"normal" | "slow" | "wheelchair">("normal");
+  const [requireElevator, setRequireElevator] = useState(false);
 
   // 하나라도 선택되면 교통약자 모드로 판단
   const isAccessibilityMode = isElderlySelected || isPregnantSelected;
@@ -309,6 +311,8 @@ function SearchModal({ onClose }: { onClose: () => void }) {
             : isPregnantSelected
             ? "pregnant"
             : null,
+          walkSpeed: isAccessibilityMode ? walkSpeed : "normal",
+          requireElevator: isAccessibilityMode ? requireElevator : false,
         },
       });
     }
@@ -402,6 +406,48 @@ function SearchModal({ onClose }: { onClose: () => void }) {
             </button>
           </div>
         </div>
+
+        {isAccessibilityMode && (
+          <div className="space-y-3 bg-gray-50 rounded-xl p-3">
+            <div>
+              <p className="text-xs font-semibold text-gray-700 mb-2">걸음 속도</p>
+              <div className="flex gap-2">
+                {([
+                  { value: "normal", label: "보통" },
+                  { value: "slow", label: "느림" },
+                  { value: "wheelchair", label: "휠체어" },
+                ] as const).map((opt) => (
+                  <button
+                    key={opt.value}
+                    onClick={() => setWalkSpeed(opt.value)}
+                    className={`flex-1 py-2 rounded-lg text-xs font-semibold border-2 transition-colors ${
+                      walkSpeed === opt.value
+                        ? "border-blue-400 bg-blue-50 text-blue-700"
+                        : "border-gray-200 bg-white text-gray-500 hover:border-gray-300"
+                    }`}
+                  >
+                    {opt.label}
+                  </button>
+                ))}
+              </div>
+              <p className="text-[11px] text-gray-400 mt-1">
+                실제 걸음 속도에 맞춰 도보 구간 예상 시간을 조정해요.
+              </p>
+            </div>
+
+            <label className="flex items-center gap-2 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={requireElevator}
+                onChange={(e) => setRequireElevator(e.target.checked)}
+                className="w-4 h-4 accent-blue-600"
+              />
+              <span className="text-xs font-semibold text-gray-700">
+                엘리베이터 확인된 역만 보여주기
+              </span>
+            </label>
+          </div>
+        )}
 
         <button
           onClick={handleSearch}
@@ -739,6 +785,8 @@ type RouteFetchParams = {
   currentMinute: number;
   currentWeekday: number;
   accessibilityType?: string | null;
+  walkSpeed?: string;
+  requireElevator?: boolean;
 };
 
 // ══════════════════════════════════════════════════════════════
@@ -747,13 +795,15 @@ type RouteFetchParams = {
 // 이 함수 안의 fetch URL과 파라미터를 여기서 수정하세요.
 // ══════════════════════════════════════════
 function fetchAccessibilityRoutes({
-  departure, arrival, currentHour, currentMinute, currentWeekday, accessibilityType,
+  departure, arrival, currentHour, currentMinute, currentWeekday, accessibilityType, walkSpeed, requireElevator,
 }: RouteFetchParams) {
   const accessibilityParam = accessibilityType
     ? `&accessibility_type=${encodeURIComponent(accessibilityType)}`
     : "";
+  const walkSpeedParam = walkSpeed ? `&walk_speed=${encodeURIComponent(walkSpeed)}` : "";
+  const requireElevatorParam = requireElevator ? `&require_elevator=1` : "";
   return fetch(
-    `${ROUTE_API_BASE}/api/routes?start=${encodeURIComponent(departure)}&end=${encodeURIComponent(arrival)}&hour=${currentHour}&minute=${currentMinute}&weekday=${currentWeekday}${accessibilityParam}`
+    `${ROUTE_API_BASE}/api/routes?start=${encodeURIComponent(departure)}&end=${encodeURIComponent(arrival)}&hour=${currentHour}&minute=${currentMinute}&weekday=${currentWeekday}${accessibilityParam}${walkSpeedParam}${requireElevatorParam}`
   ).then(res => {
     if (!res.ok) throw new Error("경로를 불러오지 못했습니다.");
     return res.json();
@@ -778,12 +828,14 @@ function fetchGeneralRoutes({
 function RouteResultScreen() {
   const navigate = useNavigate();
   const location = useLocation();
-  const { departure, arrival, isAccessibilityMode, accessibilityType } =
+  const { departure, arrival, isAccessibilityMode, accessibilityType, walkSpeed, requireElevator } =
   (location.state as {
     departure: string;
     arrival: string;
     isAccessibilityMode?: boolean;
     accessibilityType?: string | null;
+    walkSpeed?: string;
+    requireElevator?: boolean;
   }) || {};
 
   const [routes, setRoutes] = useState<any[]>([]);
@@ -801,7 +853,7 @@ function RouteResultScreen() {
     const jsDay = now.getDay();
     const currentWeekday = jsDay === 0 ? 6 : jsDay - 1;
 
-    const params = { departure, arrival, currentHour, currentMinute, currentWeekday, accessibilityType };
+    const params = { departure, arrival, currentHour, currentMinute, currentWeekday, accessibilityType, walkSpeed, requireElevator };
 
     const fetchPromise = isAccessibilityMode
       ? fetchAccessibilityRoutes(params)
@@ -821,12 +873,24 @@ function RouteResultScreen() {
         setError(err.message);
         setLoading(false);
       });
-  }, [departure, arrival, isAccessibilityMode, accessibilityType]);
+  }, [departure, arrival, isAccessibilityMode, accessibilityType, walkSpeed, requireElevator]);
 
   const currentRoute = routes[selectedIdx];
   const isRushHour = data?.is_rush_hour;
   // 지금 선택된 경로의 엘리베이터/환승 안내 (역명으로 어느 구간에 붙일지 매칭)
   const selectedElevatorInfo = data?.elevator_info_list?.[selectedIdx];
+  // 교통약자석 칸 안내 — 실제 데이터(priority_seats.csv)가 채워지기 전까지는 항상 비어있어요
+  const selectedPrioritySeatInfo = data?.priority_seat_info_list?.[selectedIdx];
+  // 버스 구간 평균 혼잡도 (서울시 승하차 인원 데이터 기반 — services/general_route.py 참고)
+  const selectedBusOccupancyList: any[] = data?.bus_occupancy_list?.[selectedIdx] ?? [];
+  const getBusOccupancyForLeg = (laneName: string, startName: string, endName: string) =>
+    selectedBusOccupancyList.find(
+      (o: any) => o.lane_name === laneName && o.start_name === startName && o.end_name === endName
+    );
+  // 지하철 구간별 "다음 30분 후 혼잡도 상승" 안내 (오르는 구간만 들어있음)
+  const selectedCongestionTrendList: any[] = data?.subway_congestion_trend_list?.[selectedIdx] ?? [];
+  const getCongestionTrendForStation = (station: string) =>
+    selectedCongestionTrendList.find((t: any) => t.station === station);
   // 지금 선택된 경로의 "모든" 환승 지점 목록 (환승이 여러 번 있으면 원소도 여러 개)
   const selectedTransferInfoList: any[] = data?.transfer_info_list?.[selectedIdx] ?? [];
   const getTransferInfoForStation = (station: string) =>
@@ -877,7 +941,10 @@ function RouteResultScreen() {
   };
 
   return (
-    <div className="size-full flex flex-col bg-gray-50">
+    <div
+      className="size-full flex flex-col bg-gray-50"
+      style={accessibilityType === "elderly" ? { zoom: 1.2 } : undefined}
+    >
       <div className="bg-white border-b border-gray-200 p-4">
         <button onClick={() => navigate(-1)} className="text-blue-600 font-semibold mb-3">
           ← 돌아가기
@@ -972,6 +1039,19 @@ function RouteResultScreen() {
                 </div>
               </div>
 
+              {isAccessibilityMode && (
+                <div className="grid grid-cols-2 gap-3 mb-4">
+                  <div className="bg-gray-50 rounded-lg py-2 text-center">
+                    <div className="text-lg font-bold text-gray-800">{currentRoute.walk_time_total_min ?? 0}분</div>
+                    <div className="text-[11px] text-gray-500">총 도보 시간</div>
+                  </div>
+                  <div className="bg-gray-50 rounded-lg py-2 text-center">
+                    <div className="text-lg font-bold text-gray-800">{currentRoute.transfer_count ?? 0}회</div>
+                    <div className="text-[11px] text-gray-500">총 환승 횟수</div>
+                  </div>
+                </div>
+              )}
+
               {getTimeDiff(currentRoute) && (
                 <div className="bg-blue-50 rounded-lg px-3 py-2 text-sm text-blue-700 text-center mb-4">
                   기본 경로 대비 {getTimeDiff(currentRoute)} 소요
@@ -991,6 +1071,12 @@ function RouteResultScreen() {
                       ? formatTransferWalkTime(prevLegTransferInfo.options[0].walk_time)
                       : null;
                     const thisLegTransferInfo = sub.traffic_type === 1 ? getTransferInfoForStation(sub.end_name) : null;
+                    const thisLegBusOccupancy = sub.traffic_type === 2
+                      ? getBusOccupancyForLeg(sub.lane_name, sub.start_name, sub.end_name)
+                      : null;
+                    const thisLegCongestionTrend = sub.traffic_type === 1
+                      ? getCongestionTrendForStation(sub.start_name)
+                      : null;
 
                     return (
                     <div key={sIdx} className="flex flex-col">
@@ -1015,6 +1101,46 @@ function RouteResultScreen() {
                         </div>
                       </div>
 
+                      {isAccessibilityMode && sub.traffic_type === 2 && thisLegBusOccupancy && (
+                        <div className={`ml-[76px] mt-2 border rounded-lg p-2.5 ${
+                          thisLegBusOccupancy.congestion === "혼잡"
+                            ? "bg-red-50 border-red-200"
+                            : thisLegBusOccupancy.congestion === "보통"
+                            ? "bg-amber-50 border-amber-200"
+                            : "bg-green-50 border-green-200"
+                        }`}>
+                          <p className={`text-xs leading-relaxed ${
+                            thisLegBusOccupancy.congestion === "혼잡"
+                              ? "text-red-800"
+                              : thisLegBusOccupancy.congestion === "보통"
+                              ? "text-amber-800"
+                              : "text-green-800"
+                          }`}>
+                            🚌 평균 혼잡도: <b>{thisLegBusOccupancy.congestion}</b>
+                            {typeof thisLegBusOccupancy.avg_boarding_count === "number"
+                              ? ` (이 시간대 평균 탑승 약 ${thisLegBusOccupancy.avg_boarding_count}명)`
+                              : ""}
+                          </p>
+                        </div>
+                      )}
+
+                      {isAccessibilityMode && sub.traffic_type === 1 && thisLegCongestionTrend && (
+                        <div className={`ml-[76px] mt-2 border rounded-lg p-2.5 ${
+                          thisLegCongestionTrend.direction === "up"
+                            ? "bg-red-50 border-red-200"
+                            : "bg-green-50 border-green-200"
+                        }`}>
+                          <p className={`text-xs leading-relaxed ${
+                            thisLegCongestionTrend.direction === "up" ? "text-red-800" : "text-green-800"
+                          }`}>
+                            {thisLegCongestionTrend.direction === "up" ? "⚠️" : "🟢"}{" "}
+                            {thisLegCongestionTrend.minutes_until_next}분 후면 혼잡도가{" "}
+                            <b>{Math.abs(thisLegCongestionTrend.diff_pct)}%</b>{" "}
+                            {thisLegCongestionTrend.direction === "up" ? "더 올라요" : "더 낮아져요"}
+                          </p>
+                        </div>
+                      )}
+
                       {isAccessibilityMode && sub.traffic_type === 1 && thisLegTransferInfo?.options?.[0] && (
                         <div className="ml-[76px] mt-2 bg-sky-50 border border-sky-200 rounded-lg p-2.5">
                           <p className="text-xs text-sky-800 leading-relaxed">
@@ -1027,6 +1153,14 @@ function RouteResultScreen() {
                         <div className="ml-[76px] mt-2 bg-sky-50 border border-sky-200 rounded-lg p-2.5">
                           <p className="text-xs text-sky-800 leading-relaxed">
                             🛗 <b>{selectedElevatorInfo.directions[0].car}-{selectedElevatorInfo.directions[0].door}호차</b>에서 타시면 {selectedElevatorInfo.station} 하차 시 엘리베이터가 가까워요
+                          </p>
+                        </div>
+                      )}
+
+                      {isAccessibilityMode && sub.traffic_type === 1 && sIdx === lastSubwayLegIdx && selectedPrioritySeatInfo?.seats?.[0] && (
+                        <div className="ml-[76px] mt-2 bg-purple-50 border border-purple-200 rounded-lg p-2.5">
+                          <p className="text-xs text-purple-800 leading-relaxed">
+                            💺 <b>{selectedPrioritySeatInfo.seats[0].car}호차</b>에 교통약자석이 있어요{selectedPrioritySeatInfo.seats[0].position ? ` (${selectedPrioritySeatInfo.seats[0].position})` : ""}
                           </p>
                         </div>
                       )}
