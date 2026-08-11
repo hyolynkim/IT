@@ -437,22 +437,12 @@ def _route_congestion_score(route, weekday=0, hour=9, minute=0):
 
 
 def _build_ai_route_reason(accessibility_type, elevator_found, congestion_checked):
-    """AI 추천 경로 3개 각각에, 무슨 기준으로 뽑혔는지 설명하는 짧은 문구를 만듭니다."""
+    """AI 추천 경로 3개에 붙일, 고정된 짧은 안내 문구를 반환합니다."""
     if accessibility_type == "pregnant":
-        parts = ["대중교통 혼잡도가 낮은 경로예요"]
-        if elevator_found:
-            parts.append("하차역에 엘리베이터 위치도 확인됐어요")
-        parts.append("도보 이동도 비교적 적어요")
-        reason = " · ".join(parts)
-        if congestion_checked:
-            reason += " (서울 지역 버스·지하철 혼잡도 기준)"
-        return reason
+        return "혼잡도가 낮고 편안하게 이동할 수 있는 경로입니다."
     elif accessibility_type == "elderly":
-        parts = ["도보 이동이 적은 경로예요"]
-        if elevator_found:
-            parts.append("하차역에 엘리베이터 위치도 확인됐어요")
-        return " · ".join(parts)
-    return "환승과 도보가 적은 경로예요"
+        return "도보 이동과 계단 이용을 최소화한 경로입니다."
+    return "환승과 도보가 적은 경로입니다."
 
 
 def select_accessibility_routes(routes, accessibility_type=None, weekday=0, hour=9, minute=0):
