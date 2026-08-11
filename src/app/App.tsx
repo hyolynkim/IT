@@ -891,6 +891,10 @@ function RouteResultScreen() {
     selectedBusOccupancyList.find(
       (o: any) => o.lane_name === laneName && o.start_name === startName && o.end_name === endName
     );
+  // 지하철 구간별 "지금 평균 혼잡도" 안내
+  const selectedSubwayCongestionList: any[] = data?.subway_congestion_list?.[selectedIdx] ?? [];
+  const getSubwayCongestionForLeg = (station: string) =>
+    selectedSubwayCongestionList.find((c: any) => c.station === station);
   // 지하철 구간별 "다음 30분 후 혼잡도 상승" 안내 (오르는 구간만 들어있음)
   const selectedCongestionTrendList: any[] = data?.subway_congestion_trend_list?.[selectedIdx] ?? [];
   const getCongestionTrendForStation = (station: string) =>
@@ -1084,6 +1088,9 @@ function RouteResultScreen() {
                     const thisLegBusOccupancy = sub.traffic_type === 2
                       ? getBusOccupancyForLeg(sub.lane_name, sub.start_name, sub.end_name)
                       : null;
+                    const thisLegSubwayCongestion = sub.traffic_type === 1
+                      ? getSubwayCongestionForLeg(sub.start_name)
+                      : null;
                     const thisLegCongestionTrend = sub.traffic_type === 1
                       ? getCongestionTrendForStation(sub.start_name)
                       : null;
@@ -1158,6 +1165,27 @@ function RouteResultScreen() {
                               💡 {thisLegBusCongestionTrend.recommendation}
                             </p>
                           )}
+                        </div>
+                      )}
+
+                      {isAccessibilityMode && sub.traffic_type === 1 && thisLegSubwayCongestion && (
+                        <div className={`ml-[76px] mt-2 border rounded-lg p-2.5 ${
+                          thisLegSubwayCongestion.congestion === "혼잡"
+                            ? "bg-red-50 border-red-200"
+                            : thisLegSubwayCongestion.congestion === "보통"
+                            ? "bg-amber-50 border-amber-200"
+                            : "bg-green-50 border-green-200"
+                        }`}>
+                          <p className={`text-xs leading-relaxed ${
+                            thisLegSubwayCongestion.congestion === "혼잡"
+                              ? "text-red-800"
+                              : thisLegSubwayCongestion.congestion === "보통"
+                              ? "text-amber-800"
+                              : "text-green-800"
+                          }`}>
+                            🚇 평균 혼잡도: <b>{thisLegSubwayCongestion.congestion}</b>{" "}
+                            ({thisLegSubwayCongestion.current_pct}%)
+                          </p>
                         </div>
                       )}
 
