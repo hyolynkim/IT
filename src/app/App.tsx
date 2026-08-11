@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef } from "react";
 
 const API_BASE = "https://subway-congestion-api.onrender.com";
-const ROUTE_API_BASE = "https://yeoyuro-backend.onrender.com";
+const ROUTE_API_BASE = "http://localhost:5000";
 
 declare global { interface Window { kakao: any; } }
 
@@ -304,9 +304,7 @@ function SearchModal({ onClose }: { onClose: () => void }) {
           departure,
           arrival,
           isAccessibilityMode,
-          accessibilityType: isElderlySelected && isPregnantSelected
-            ? "both"
-            : isElderlySelected
+          accessibilityType: isElderlySelected
             ? "elderly"
             : isPregnantSelected
             ? "pregnant"
@@ -362,7 +360,10 @@ function SearchModal({ onClose }: { onClose: () => void }) {
           <p className="text-sm font-semibold text-gray-700 mb-2">교통약자를 위한 경로가 필요하신가요?</p>
           <div className="flex gap-3">
             <button
-              onClick={() => setIsElderlySelected(prev => !prev)}
+              onClick={() => {
+                setIsElderlySelected(prev => !prev);
+                setIsPregnantSelected(false);
+              }}
               className={`flex-1 flex flex-col items-center gap-1.5 py-3 rounded-xl border-2 transition-colors ${
                 isElderlySelected
                   ? "border-yellow-400 bg-yellow-50"
@@ -384,7 +385,10 @@ function SearchModal({ onClose }: { onClose: () => void }) {
             </button>
 
             <button
-              onClick={() => setIsPregnantSelected(prev => !prev)}
+              onClick={() => {
+                setIsPregnantSelected(prev => !prev);
+                setIsElderlySelected(false);
+              }}
               className={`flex-1 flex flex-col items-center gap-1.5 py-3 rounded-xl border-2 transition-colors ${
                 isPregnantSelected
                   ? "border-pink-400 bg-pink-50"
