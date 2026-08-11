@@ -108,17 +108,18 @@ def _walk_burden_score(route):
 
 
 def _elderly_score(route):
-    """노약자 모드: 도보 시간을 최우선으로 최소화 (그다음 환승, 그다음 시간)."""
+    """노약자 모드: 도보 시간을 최우선으로 최소화 (환승 시 도보 이동도
+    walk_time_total_min에 이미 포함되어 있어서 별도 기준으로 안 둡니다)."""
     return (
         route.get("walk_time_total_min", 0),
-        route.get("transfer_count", 0),
         route.get("estimated_comfort_time_min", 0),
     )
 
 
-def _general_optimal_score(route):
-    """일반 모드와 동일한 기준(광역버스 우선 → 시간 순)으로 '가장 빠른/좋은' 경로를 고를 때 씁니다."""
-    return (not route.get("has_express_bus", False), route.get("estimated_comfort_time_min", 0))
+def _min_time_score(route):
+    """순수하게 '가장 빨리 도착하는' 경로를 고를 때 씁니다 (혼잡도·광역버스 등 다른
+    조건은 전혀 안 보고, 예상 소요시간만 봅니다) — '최소 시간' 카테고리용."""
+    return route.get("estimated_comfort_time_min", 0)
 
 
 _CONGESTION_LEVEL_SCORE = {"혼잡": 2, "보통": 1, "여유": 0}
@@ -435,19 +436,41 @@ def _route_congestion_score(route, weekday=0, hour=9, minute=0):
     return sum(_CONGESTION_LEVEL_SCORE.get(o.get("congestion"), 1) for o in occupancy) / len(occupancy)
 
 
+def _build_ai_route_reason(accessibility_type, elevator_found, congestion_checked):
+    """AI 추천 경로 3개 각각에, 무슨 기준으로 뽑혔는지 설명하는 짧은 문구를 만듭니다."""
+    if accessibility_type == "pregnant":
+        parts = ["대중교통 혼잡도가 낮은 경로예요"]
+        if elevator_found:
+            parts.append("하차역에 엘리베이터 위치도 확인됐어요")
+        parts.append("도보 이동도 비교적 적어요")
+        reason = " · ".join(parts)
+        if congestion_checked:
+            reason += " (서울 지역 버스·지하철 혼잡도 기준)"
+        return reason
+    elif accessibility_type == "elderly":
+        parts = ["도보 이동이 적은 경로예요"]
+        if elevator_found:
+            parts.append("하차역에 엘리베이터 위치도 확인됐어요")
+        return " · ".join(parts)
+    return "환승과 도보가 적은 경로예요"
+
+
 def select_accessibility_routes(routes, accessibility_type=None, weekday=0, hour=9, minute=0):
     """노약자/임산부 모드에서 화면에 보여줄 경로 5개를 고릅니다.
 
-    accessibility_type에 따라 "AI 추천 경로" 3개를 고르는 기본 기준이 달라집니다:
-      - "elderly" (노약자): 도보 시간 최소화를 최우선
-      - "pregnant" (임산부): 혼잡도(버스 구간, 지금은 목업 데이터) 최소화를 최우선
-      - 그 외("both" 포함) / None: 환승 → 도보 순 (기존과 동일)
+    accessibility_type에 따라 "AI 추천 경로" 3개를 고르는 기준이 달라집니다:
+      - "elderly" (노약자): 도보 최소화 → 종착지 엘리베이터 유무 순
+      - "pregnant" (임산부): 혼잡도(서울 버스·지하철) 최소화 → 종착지 엘리베이터
+        유무 → 도보 최소화 순
+      - 그 외("both" 포함) / None: 환승 → 도보 순 (기존과 동일, 기본값)
 
     - 뒤 2개: 남은 경로 중 요금이 가장 저렴한 것 1개("최소 금액"),
-      그리고 일반 모드와 같은 기준으로 가장 나은 것 1개("최적 경로").
+      그리고 예상 소요시간이 가장 짧은 것 1개("최소 시간", 다른 조건은 안 봄).
 
-    각 경로 dict에 category("burden"/"cost"/"optimal")와 그에 맞는
-    category_label(화면에 보여줄 탭 이름)을 붙여서 반환합니다.
+    각 경로 dict에 category("burden"/"cost"/"time")와 그에 맞는
+    category_label(화면에 보여줄 탭 이름)을 붙여서 반환합니다. "burden"
+    카테고리(AI 추천 경로 3개)에는 무슨 기준으로 뽑혔는지 설명하는
+    ai_reason 문구도 같이 붙입니다.
     이미 계산한 엘리베이터 정보는 "_elevator_info_cache"에 담아두는데,
     호출한 쪽(get_optimal_route)에서 이 캐시를 그대로 재사용하고 지워야 합니다.
     """
@@ -455,9 +478,13 @@ def select_accessibility_routes(routes, accessibility_type=None, weekday=0, hour
         return []
 
     # route_finder가 mode="accessibility"로 이미 (환승, 도보, 시간) 순 정렬해서 주지만,
-    # accessibility_type에 따라 기준이 다르면 여기서 다시 정렬합니다.
+    # accessibility_type에 따라 기준이 다르면 여기서 다시 정렬합니다. 이 1차 정렬은
+    # "상위 후보 8개"를 뽑기 위한 저렴한 근사치일 뿐이고, 최종 순위(엘리베이터·혼잡도
+    # 반영)는 바로 아래 shortlist 재정렬에서 정확하게 다시 매겨집니다.
     if accessibility_type == "elderly":
         burden_sorted = sorted(routes, key=_elderly_score)
+    elif accessibility_type == "pregnant":
+        burden_sorted = sorted(routes, key=_walk_burden_score)
     else:
         burden_sorted = sorted(routes, key=_walk_burden_score)
 
@@ -468,8 +495,10 @@ def select_accessibility_routes(routes, accessibility_type=None, weekday=0, hour
     for r in shortlist:
         r["_elevator_info_cache"] = get_elevator_tip_for_route(r)
 
+    congestion_checked = False
     if accessibility_type == "pregnant":
-        # 임산부 모드는 혼잡도를 최우선으로 다시 좁힙니다.
+        # 임산부 모드: 혼잡도 → 엘리베이터 → 도보 순으로 최종 재정렬합니다.
+        congestion_checked = True
         for r in shortlist:
             r["_congestion_score_cache"] = _route_congestion_score(r, weekday=weekday, hour=hour, minute=minute)
 
@@ -477,21 +506,19 @@ def select_accessibility_routes(routes, accessibility_type=None, weekday=0, hour
             info = r.get("_elevator_info_cache")
             elevator_found = bool(info and info.get("directions"))
             return (
-                r.get("_congestion_score_cache", 0),  # 혼잡도 낮은 쪽 최우선
-                r.get("transfer_count", 0),
-                r.get("walk_time_total_min", 0),
-                0 if elevator_found else 1,
+                r.get("_congestion_score_cache", 0),  # 1순위: 혼잡도 낮은 쪽
+                0 if elevator_found else 1,            # 2순위: 엘리베이터 확인 여부
+                r.get("walk_time_total_min", 0),       # 3순위: 도보 시간
                 r.get("estimated_comfort_time_min", 0),
             )
     elif accessibility_type == "elderly":
-        # 노약자 모드는 도보 시간을 최우선으로 — 1차 정렬과 동일한 기준을 끝까지 유지합니다.
+        # 노약자 모드: 도보 → 엘리베이터 순으로 최종 재정렬합니다.
         def _shortlist_score(r):
             info = r.get("_elevator_info_cache")
             elevator_found = bool(info and info.get("directions"))
             return (
-                r.get("walk_time_total_min", 0),  # 도보 시간 최우선
-                r.get("transfer_count", 0),
-                0 if elevator_found else 1,
+                r.get("walk_time_total_min", 0),  # 1순위: 도보 시간
+                0 if elevator_found else 1,        # 2순위: 엘리베이터 확인 여부
                 r.get("estimated_comfort_time_min", 0),
             )
     else:
@@ -501,7 +528,7 @@ def select_accessibility_routes(routes, accessibility_type=None, weekday=0, hour
             return (
                 r.get("transfer_count", 0),
                 r.get("walk_time_total_min", 0),
-                0 if elevator_found else 1,  # 엘리베이터 확인된 쪽을 동점 상황에서 우선
+                0 if elevator_found else 1,
                 r.get("estimated_comfort_time_min", 0),
             )
 
@@ -510,32 +537,34 @@ def select_accessibility_routes(routes, accessibility_type=None, weekday=0, hour
     burden_routes = shortlist[:3]
     chosen_ids = {id(r) for r in burden_routes}
 
-    # "최소 금액"/"최적 경로"는 전체 후보 중 진짜 1등만 인정합니다.
-    # (AI 추천 경로를 제외한 나머지 중에서만 찾으면, 진짜 최저가/최적 경로가
-    # 이미 AI 추천 쪽에 들어있을 때 "최소 금액"이 실제로 더 비싼 경로를
-    # 가리키는 모순이 생길 수 있어서요.) 이미 AI 추천 경로 중 하나가 그
-    # 기준으로도 1등이면, 같은 경로를 중복된 탭으로 또 보여주지 않고 건너뜁니다.
+    # "최소 금액"/"최소 시간"은 전체 후보 중 진짜 1등만 인정합니다.
+    # (AI 추천 경로를 제외한 나머지 중에서만 찾으면, 진짜 최저가/최단시간이
+    # 이미 AI 추천 쪽에 들어있을 때 모순이 생길 수 있어서요.) 이미 AI 추천
+    # 경로 중 하나가 그 기준으로도 1등이면, 중복된 탭으로 또 보여주지 않고 건너뜁니다.
     true_cheapest = min(routes, key=lambda r: r.get("payment_krw", 0))
     cost_route = None if id(true_cheapest) in chosen_ids else true_cheapest
     if cost_route is not None:
         chosen_ids.add(id(cost_route))
 
-    true_optimal = min(routes, key=_general_optimal_score)
-    optimal_route = None if id(true_optimal) in chosen_ids else true_optimal
+    true_min_time = min(routes, key=_min_time_score)
+    min_time_route = None if id(true_min_time) in chosen_ids else true_min_time
 
     result = []
     for i, r in enumerate(burden_routes):
+        info = r.get("_elevator_info_cache")
+        elevator_found = bool(info and info.get("directions"))
         r["category"] = "burden"
         r["category_label"] = f"AI 추천 경로 {i + 1}"
+        r["ai_reason"] = _build_ai_route_reason(accessibility_type, elevator_found, congestion_checked)
         result.append(r)
     if cost_route is not None:
         cost_route["category"] = "cost"
         cost_route["category_label"] = "최소 금액"
         result.append(cost_route)
-    if optimal_route is not None:
-        optimal_route["category"] = "optimal"
-        optimal_route["category_label"] = "최적 경로"
-        result.append(optimal_route)
+    if min_time_route is not None:
+        min_time_route["category"] = "time"
+        min_time_route["category_label"] = "최소 시간"
+        result.append(min_time_route)
 
     # 응답에 안 실어도 되는 내부 계산용 캐시는 정리합니다 (엘리베이터 캐시는
     # 호출한 쪽에서 재사용하니 남겨두고, 혼잡도 캐시만 지웁니다).
