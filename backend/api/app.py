@@ -3,7 +3,7 @@ from flask_cors import CORS
 import os
 import re
 import sys
-import requests
+import requests, time
 import json
 from dataclasses import asdict
 
@@ -12,9 +12,15 @@ sys.path.append(BASE_DIR)
 
 # gunicorn이 'api.app:app'처럼 패키지 경로로 이 모듈을 import할 때는
 # (python app.py로 직접 실행할 때와 달리) 이 파일이 있는 api/ 폴더 자체가
-# import 경로에 안 잡혀서, 같은 폴더의 subway_guide 등을 못 찾는 문제가 있었음.
+# import 경로에 안 잡혀서, 같은 폴더의 subway_guide/tago_service/bus_congestion
+# 등을 못 찾는 문제가 있었음. 그래서 이 sys.path.append 이후에만 그 모듈들을 import해야 함.
 API_DIR = os.path.dirname(os.path.abspath(__file__))
 sys.path.append(API_DIR)
+
+from tago_service import get_route_congestion
+from bus_congestion import CongestionEstimator
+
+est = CongestionEstimator()
 
 from models.route_finder import find_cat_optimal_route
 
@@ -327,6 +333,116 @@ def get_gemini_rush_hour_recommendation(routes, start, end, hour, minute, weekda
             "rush_hour_tip": f"분석 중 오류: {str(e)}",
             "alternative": ""
         }
+
+
+BUS_LIST_KEY = "4e6c484353746966383074764c4452"   # busRteInfo용
+BUS_ARR_KEY = "c1UVTmspAy1%2F9y1h9T41mvJEUqQ5265VeC79svxBTHqBP1RBZTDXbuXGR4yHeJY8q%2BDgLKT8oq2ROnMzxO6d%2Fg%3D%3D"  # getArrInfoByRouteAllList용
+
+_route_cache = {}     # { "140": "100100118", ... }
+_route_cache_time = 0
+CACHE_TTL = 60 * 60 * 6  # 6시간마다 갱신
+
+def build_route_cache():
+    global _route_cache, _route_cache_time
+    mapping = {}
+    start = 1
+    page_size = 1000
+    while True:
+        end = start + page_size - 1
+        url = f"http://openapi.seoul.go.kr:8088/{BUS_LIST_KEY}/json/busRteInfo/{start}/{end}/"
+        res = requests.get(url, timeout=10).json()
+        rows = res.get("busRteInfo", {}).get("row", [])
+        if not rows:
+            break
+        for r in rows:
+            mapping[r["RTE_NM"]] = r["ROUTE_ID"]
+        if len(rows) < page_size:
+            break
+        start += page_size
+    _route_cache = mapping
+    _route_cache_time = time.time()
+
+def get_route_id(route_nm: str):
+    global _route_cache_time
+    if not _route_cache or (time.time() - _route_cache_time > CACHE_TTL):
+        build_route_cache()
+    return _route_cache.get(route_nm)
+
+CONGESTION_MAP = {"0": "정보없음", "3": "여유", "4": "보통", "5": "혼잡"}
+
+
+@app.route("/bus/search")
+def bus_search():
+    route_nm = request.args.get("routeNm", "").strip()
+    city_code = request.args.get("cityCode", "").strip() or None
+    if not route_nm:
+        return jsonify({"error": "버스 번호를 입력해주세요."}), 400
+
+    result = get_route_congestion(route_nm, city_code=city_code)
+
+    if result.get("error"):
+        return jsonify({"error": result["error"], "routes": []}), 404
+
+    stations = [
+        {
+            "stationName": s["stationName"],
+            "congestionLevel": s["congestionLevel"] or "0",
+            "congestionLabel": s["congestionLabel"],
+            "isFull": s["congestionLevel"] == "5",
+        }
+        for s in result["stations"]
+    ]
+
+    return jsonify({
+        "routes": [{
+            "routeId": result["routeId"],
+            "routeNm": result["routeNo"],
+            "direction": "전체",
+            "stations": stations,
+        }]
+    })
+
+@app.route("/api/congestion/route")
+def bus_congestion_route():
+    """서울 통계 기반(csv) 버스 혼잡도 - 노선번호로 검색 -> 경유 정류소 전체 + 혼잡도"""
+    route_nm = request.args.get("routeNm", "").strip()
+    hour = request.args.get("hour", type=int)
+
+    if not route_nm:
+        return jsonify({"error": "버스 번호를 입력해주세요."}), 400
+
+    if hour is None:
+        from datetime import datetime
+        hour = datetime.now().hour
+
+    stops = est.get_route_stops(route_nm, hour=hour)
+
+    if not stops:
+        return jsonify({"error": f"'{route_nm}'번 노선을 찾을 수 없습니다.", "routes": []}), 404
+
+    stations = [
+        {
+            "stationName": s["역명"],
+            "stopId": s["정류장ID"],
+            "arsNumber": s["ARS번호"],
+            "level": s["level"],           # "여유" | "보통" | "혼잡"
+            "barPercent": s["bar_percent"],  # 0~100
+            "avgCount": s["count"],          # 하루평균 승차인원(참고용)
+        }
+        for s in stops
+    ]
+
+    return jsonify({
+        "source": "stats",  # 프론트에서 실시간(gbis)과 구분하기 위한 표시
+        "routes": [{
+            "routeNm": stops[0]["노선번호"],
+            "routeName": stops[0]["노선명"],
+            "hour": hour,
+            "stations": stations,
+        }]
+    })
+
+
 
 @app.route('/predict/congestion', methods=['POST'])
 def predict_congestion():

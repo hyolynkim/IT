@@ -6,7 +6,7 @@ const ROUTE_API_BASE = "https://yeoyuro-backend.onrender.com";
 declare global { interface Window { kakao: any; } }
 
 import { BrowserRouter as Router, Routes, Route, useNavigate, useLocation } from "react-router";
-import { Search, User, MapPin, Navigation, TrendingDown, Home, Map, X, Check, Train, Star } from "lucide-react";
+import { Search, User, MapPin, Navigation, TrendingDown, Home, Map, X, Check, Train, Bus, Star } from "lucide-react";
 import { ImageWithFallback } from "./components/figma/ImageWithFallback";
 import { getSubwayLineColor, getReadableTextColor } from "./lib/subwayLineColors";
 import { formatDuration } from "./lib/formatDuration";
@@ -128,6 +128,41 @@ function getFrequentRoutes(): SearchRecord[] {
     .filter(r => r.count >= 2)
     .sort((a, b) => b.count - a.count || b.lastUsed - a.lastUsed)
     .slice(0, 5);
+}
+// ────────────────────────────────────────────────────────────────
+
+// ── 버스 북마크 관리 ────────────────────────────────────────────
+const BUS_BOOKMARK_KEY = "busBookmarks";
+
+function getBusBookmarkKey() {
+  try {
+    const user = JSON.parse(sessionStorage.getItem("loggedInUser") || "null");
+    return user?.username ? `${BUS_BOOKMARK_KEY}_${user.username}` : BUS_BOOKMARK_KEY;
+  } catch { return BUS_BOOKMARK_KEY; }
+}
+
+interface BusBookmark {
+  routeId: string;
+  routeNm: string;
+  direction: string;
+}
+
+function loadBusBookmarks(): BusBookmark[] {
+  try { return JSON.parse(localStorage.getItem(getBusBookmarkKey()) || "[]"); }
+  catch { return []; }
+}
+
+function toggleBusBookmark(item: BusBookmark) {
+  const list = loadBusBookmarks();
+  const idx = list.findIndex(b => b.routeId === item.routeId && b.direction === item.direction);
+  if (idx !== -1) list.splice(idx, 1);
+  else list.push(item);
+  localStorage.setItem(getBusBookmarkKey(), JSON.stringify(list));
+  return list;
+}
+
+function isBusBookmarked(list: BusBookmark[], routeId: string, direction: string) {
+  return list.some(b => b.routeId === routeId && b.direction === direction);
 }
 // ────────────────────────────────────────────────────────────────
 
@@ -547,6 +582,23 @@ function MyTransitTab() {
     setCongestionBookmarks(getCongestionBookmarks());
   }, []);
 
+  const [busBookmarks, setBusBookmarksState] = useState<BusBookmark[]>([]);
+  const [busCongestionMap, setBusCongestionMap] = useState<Record<string, any>>({});
+
+  useEffect(() => {
+    const list = loadBusBookmarks();
+    setBusBookmarksState(list);
+    list.forEach(b => {
+      fetch(`${ROUTE_API_BASE}/bus/search?routeNm=${encodeURIComponent(b.routeNm)}`)
+        .then(res => res.json())
+        .then(data => {
+          const matched = (data.routes || []).find((r: any) => r.routeId === b.routeId && r.direction === b.direction);
+          if (matched) setBusCongestionMap(prev => ({ ...prev, [`${b.routeId}-${b.direction}`]: matched }));
+        })
+        .catch(() => {});
+    });
+  }, []);
+
   const handleRouteClick = (departure: string, arrival: string) => {
     recordSearch(departure, arrival);
     navigate("/routes", { state: { departure, arrival } });
@@ -669,6 +721,33 @@ function MyTransitTab() {
           </div>
         )}
       </div>
+
+      {busBookmarks.length > 0 && (
+        <div className="pt-2">
+          <h2 className="text-xl font-bold text-gray-800 mb-3">즐겨찾는 버스</h2>
+          <div className="space-y-3">
+            {busBookmarks.map((b) => {
+              const route = busCongestionMap[`${b.routeId}-${b.direction}`];
+              const levels = route ? route.stations.map((s: any) => Number(s.congestionLevel)) : [];
+              const maxLevel = levels.length ? Math.max(...levels) : 0;
+              const cg = maxLevel === 5 ? { badge: "bg-red-100 text-red-700", label: "혼잡" }
+                : maxLevel === 4 ? { badge: "bg-yellow-100 text-yellow-700", label: "보통" }
+                : maxLevel === 3 ? { badge: "bg-green-100 text-green-700", label: "여유" }
+                : { badge: "bg-gray-100 text-gray-500", label: "정보없음" };
+              return (
+                <div key={`${b.routeId}-${b.direction}`} className="bg-white rounded-xl p-4 shadow-md flex items-center gap-4">
+                  <Bus className="w-6 h-6 text-blue-600 flex-shrink-0" />
+                  <div className="flex-1 min-w-0">
+                    <div className="font-semibold text-gray-800">{b.routeNm}번</div>
+                    <div className="text-sm text-gray-500">{b.direction}</div>
+                  </div>
+                  <span className={`px-2 py-0.5 rounded-md text-xs font-semibold ${cg.badge}`}>{cg.label}</span>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -680,6 +759,56 @@ function CongestionTab() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [bookmarkTick, setBookmarkTick] = useState(0); // 북마크 토글 시 재렌더용
+  const [busQuery, setBusQuery] = useState("");
+  const [busResults, setBusResults] = useState<any[]>([]);
+  const [busSource, setBusSource] = useState<"gbis" | "stats">("gbis");
+  const [busLoading, setBusLoading] = useState(false);
+  const [busError, setBusError] = useState<string | null>(null);
+  const [bookmarks, setBookmarks] = useState<BusBookmark[]>(() => loadBusBookmarks());
+  const [selectedBusCity, setSelectedBusCity] = useState("");
+
+  // 버스 검색 결과가 하나라도 있으면 "버스 검색 모드"로 간주 -> 지하철 그리드 숨김
+  const isBusSearchActive = busResults.length > 0 || busLoading || !!busError;
+
+  const handleBusSearch = () => {
+    if (!busQuery) return;
+    setBusLoading(true);
+    setBusError(null);
+
+    const isSeoul = selectedBusCity === "seoul";
+
+    const url = isSeoul
+      ? `${ROUTE_API_BASE}/api/congestion/route?routeNm=${encodeURIComponent(busQuery)}`
+      : `${ROUTE_API_BASE}/bus/search?routeNm=${encodeURIComponent(busQuery)}${
+          selectedBusCity ? `&cityCode=${selectedBusCity}` : ""
+        }`;
+
+    fetch(url)
+      .then(res => res.json())
+      .then(data => {
+        if (!data.routes || data.routes.length === 0) {
+          setBusError(data.error || "검색 결과가 없습니다.");
+          setBusResults([]);
+        } else {
+          setBusResults(data.routes);
+          setBusSource(isSeoul ? "stats" : "gbis");
+        }
+        setBusLoading(false);
+      })
+      .catch(() => {
+        setBusError("버스 정보를 불러오지 못했습니다.");
+        setBusLoading(false);
+      });
+  };
+
+  // 버스 검색창을 비우면 다시 지하철 그리드가 보이도록 리셋
+  const handleBusQueryChange = (value: string) => {
+    setBusQuery(value);
+    if (!value) {
+      setBusResults([]);
+      setBusError(null);
+    }
+  };
 
   const now = new Date();
   const currentHour = now.getHours();
@@ -687,9 +816,24 @@ function CongestionTab() {
   const currentTimeLabel = `${currentHour}시${currentMinutes}`;
   const dayOfWeek = now.getDay();
   const dayType = dayOfWeek === 0 ? "일요일" : dayOfWeek === 6 ? "토요일" : "평일";
-  const lines = ["1호선","2호선","3호선","4호선","5호선","6호선","7호선","8호선"];
+  const lines = ["1호선", "2호선", "3호선", "4호선", "5호선", "6호선", "7호선", "8호선"];
+  const BUS_CITIES = [
+    { code: "seoul", name: "서울" },
+    { code: "31020", name: "성남" },
+    { code: "31010", name: "수원" },
+    { code: "31190", name: "용인" },
+    { code: "31100", name: "고양" },
+    { code: "31050", name: "부천" },
+    { code: "31040", name: "안양" },
+    { code: "21", name: "부산" },
+    { code: "23", name: "인천" },
+    { code: "22", name: "대구" },
+  ];
 
   useEffect(() => {
+    // 버스 검색 중일 땐 지하철 데이터가 필요 없으니 재조회하지 않음
+    if (isBusSearchActive) return;
+
     fetch(`${API_BASE}/congestion`)
       .then(res => {
         if (!res.ok) throw new Error("데이터를 불러오지 못했습니다.");
@@ -704,6 +848,7 @@ function CongestionTab() {
         setError(err.message);
         setLoading(false);
       });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const filtered = allData.filter(item => {
@@ -720,6 +865,18 @@ function CongestionTab() {
     return { badge: "bg-green-100 text-green-700", bar: "bg-green-500", label: "쾌적" };
   };
 
+  const getStatsLevelStyle = (level: string) => {
+    if (level === "혼잡") return "bg-red-100 text-red-700";
+    if (level === "보통") return "bg-yellow-100 text-yellow-700";
+    return "bg-green-100 text-green-700";
+  };
+
+  const getStatsBarColor = (level: string) => {
+    if (level === "혼잡") return "bg-red-500";
+    if (level === "보통") return "bg-yellow-500";
+    return "bg-green-500";
+  };
+
   return (
     <div className="p-4 space-y-4">
       <div className="flex items-center justify-between">
@@ -727,17 +884,7 @@ function CongestionTab() {
         <span className="text-sm text-gray-500">{currentTimeLabel} ({dayType})</span>
       </div>
 
-      <div className="bg-white rounded-xl p-3 shadow-md flex items-center gap-2">
-        <Search className="w-5 h-5 text-gray-400" />
-        <input
-          type="text"
-          placeholder="역 이름 검색 (예: 강남)"
-          value={searchQuery}
-          onChange={(e) => setSearchQuery(e.target.value)}
-          className="flex-1 outline-none text-gray-800 placeholder-gray-400"
-        />
-      </div>
-
+      {/* 지하철 노선 필터 (검색창보다 위) */}
       <div className="flex items-center gap-2 overflow-x-auto pb-1">
         <div className="flex-shrink-0 pl-1 pr-1">
           <Train className="w-5 h-5 text-gray-400" />
@@ -768,81 +915,219 @@ function CongestionTab() {
         })}
       </div>
 
-      <p className="text-xs text-gray-400">현재 시간({currentTimeLabel}, {dayType}) 기준 혼잡도입니다</p>
+      {/* 역 이름 검색창: 지하철 필터 바로 아래로 이동 */}
+      <div className="bg-white rounded-xl p-3 shadow-md flex items-center gap-2">
+        <Search className="w-5 h-5 text-gray-400" />
+        <input
+          type="text"
+          placeholder="역 이름 검색 (예: 강남)"
+          value={searchQuery}
+          onChange={(e) => setSearchQuery(e.target.value)}
+          className="flex-1 outline-none text-gray-800 placeholder-gray-400"
+        />
+      </div>
 
-      {loading && <div className="text-center py-10 text-gray-500">혼잡도 데이터 불러오는 중...</div>}
-      {error && <div className="text-center py-10 text-red-500">{error}</div>}
+      {/* 버스 혼잡도 검색 */}
+      <div className="flex items-center gap-2 overflow-x-auto pb-1 mt-2">
+        <div className="flex-shrink-0 pl-1 pr-1">
+          <Bus className="w-5 h-5 text-gray-400" />
+        </div>
+        <button
+          onClick={() => setSelectedBusCity("")}
+          className={`flex-shrink-0 px-3 py-1.5 rounded-full text-sm font-semibold transition-colors ${selectedBusCity === "" ? "bg-blue-600 text-white" : "bg-gray-100 text-gray-600"}`}
+        >
+          전체
+        </button>
+        {BUS_CITIES.map((city) => (
+          <button
+            key={city.code}
+            onClick={() => setSelectedBusCity(city.code)}
+            className={`flex-shrink-0 px-3 py-1.5 rounded-full text-sm font-semibold transition-colors ${selectedBusCity === city.code ? "bg-blue-600 text-white" : "bg-gray-100 text-gray-600"}`}
+          >
+            {city.name}
+          </button>
+        ))}
+      </div>
 
-      {!loading && !error && (
-        <div className="grid grid-cols-2 gap-3">
-          {filtered.length > 0 ? filtered.map((item: any, idx: number) => {
-            const percentage = Number(item["혼잡도"] ?? 0);
-            const congestion = getCongestionColor(percentage);
-            const displayPercent = Math.min(Math.round(percentage), 100);
-            const stationName = item["출발역"];
-            const lineName = item["호선"];
-            const direction = item["상하구분"];
-            const bookmarked = isCongestionBookmarked("subwayCongestion", stationName, lineName, direction);
+      <div className="flex items-center gap-2 mt-2">
+        <input
+          type="text"
+          placeholder="버스 번호 입력 (예: 140)"
+          value={busQuery}
+          onChange={(e) => handleBusQueryChange(e.target.value)}
+          onKeyDown={(e) => { if (e.key === "Enter") handleBusSearch(); }}
+          className="flex-1 px-3 py-2 bg-white border border-gray-200 rounded-lg outline-none focus:border-blue-400 text-sm"
+        />
+        <button
+          onClick={handleBusSearch}
+          disabled={!busQuery || busLoading}
+          className="px-3 py-2 bg-blue-600 text-white rounded-lg text-sm font-semibold disabled:bg-gray-300"
+        >
+          검색
+        </button>
+      </div>
+
+      {busLoading && <div className="text-center py-4 text-gray-400 text-sm">버스 정보 불러오는 중...</div>}
+      {busError && <div className="text-center py-4 text-red-500 text-sm">{busError}</div>}
+
+      {/* 서울(통계 기반) 검색 결과 */}
+      {busResults.length > 0 && busSource === "stats" && (
+        <div className="space-y-3">
+          {busResults.map((route) => {
+            // "142번(도봉동~고속터미널)" -> "도봉동~고속터미널" (괄호 안 내용만 추출)
+            const routeNameMatch = (route.routeName || "").match(/\((.+)\)/);
+            const routeNameShort = routeNameMatch ? routeNameMatch[1] : route.routeName;
             return (
-              <div key={idx} className="bg-white rounded-xl p-3 shadow-sm flex flex-col justify-between border border-gray-100">
-                <div className="flex flex-col mb-2 gap-1">
-                  <div className="flex items-start justify-between gap-1">
-                    <span className="font-bold text-gray-800 text-base truncate">{stationName}</span>
-                    <div className="flex items-center gap-1 flex-shrink-0">
-                      <span className={`px-2 py-0.5 rounded-md text-[10px] whitespace-nowrap font-semibold ${congestion.badge}`}>
-                        {congestion.label}
-                      </span>
-                      <button
-                        onClick={() => {
-                          toggleCongestionBookmark({
-                            kind: "subwayCongestion",
-                            name: stationName,
-                            line: lineName,
-                            direction,
-                          });
-                          setBookmarkTick(t => t + 1);
-                        }}
-                        className="p-0.5 -mr-1"
-                        aria-label="북마크"
-                      >
-                        <Star
-                          className="w-4 h-4"
-                          fill={bookmarked ? "#facc15" : "none"}
-                          stroke={bookmarked ? "#facc15" : "#9ca3af"}
-                        />
-                      </button>
-                    </div>
+              <div key={route.routeNm} className="bg-white rounded-xl p-4 shadow-sm border border-gray-100 space-y-3">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <span className="font-bold text-gray-800">{route.routeNm}번</span>
+                    <span className="text-sm text-gray-500 ml-2">{routeNameShort}</span>
                   </div>
-                  <span className="flex items-center gap-1 text-xs text-gray-500 truncate">
-                    <span
-                      className="px-1.5 py-0.5 rounded text-[10px] font-semibold flex-shrink-0"
-                      style={{
-                        backgroundColor: getSubwayLineColor(item["호선"]),
-                        color: getReadableTextColor(getSubwayLineColor(item["호선"])),
-                      }}
-                    >
-                      {item["호선"]}
-                    </span>
-                    {item["상하구분"]}
-                  </span>
                 </div>
-                <div className="mt-auto pt-2">
-                  <div className="w-full bg-gray-100 rounded-full h-2">
-                    <div className={`h-2 rounded-full ${congestion.bar}`} style={{ width: `${displayPercent}%` }} />
-                  </div>
+                <p className="text-xs text-gray-400">경유 정류소 {route.stations.length}개</p>
+
+                <div className="space-y-2 max-h-96 overflow-y-auto pr-1">
+                  {route.stations.map((s: any) => (
+                    <div key={s.stopId} className="border border-gray-100 rounded-lg p-2.5">
+                      <div className="flex items-center justify-between mb-1.5">
+                        <span className="text-sm font-semibold text-gray-800 truncate">{s.stationName}</span>
+                        <span className={`px-2 py-0.5 rounded-full text-[11px] font-semibold flex-shrink-0 ml-2 ${getStatsLevelStyle(s.level)}`}>
+                          {s.level}
+                        </span>
+                      </div>
+                      <div className="bg-gray-100 rounded-full h-1.5">
+                        <div
+                          className={`h-1.5 rounded-full ${getStatsBarColor(s.level)}`}
+                          style={{ width: `${s.barPercent}%` }}
+                        />
+                      </div>
+                    </div>
+                  ))}
                 </div>
               </div>
             );
-          }) : (
-            <div className="col-span-2 text-center py-10 text-gray-400 text-sm">
-              {searchQuery ? `"${searchQuery}" 검색 결과가 없습니다.` : "현재 시간대 데이터가 없습니다."}
+          })}
+        </div>
+      )}
+
+      {/* 그 외 도시(실시간 GBIS) 검색 결과 */}
+      {busResults.length > 0 && busSource === "gbis" && (
+        <div className="space-y-3">
+          {busResults.map((route) => {
+            const bookmarked = isBusBookmarked(bookmarks, route.routeId, route.direction);
+            const levels = route.stations.map((s: any) => Number(s.congestionLevel));
+            const maxLevel = levels.length ? Math.max(...levels) : 0;
+            const cg = maxLevel === 5 ? { badge: "bg-red-100 text-red-700", label: "혼잡" }
+              : maxLevel === 4 ? { badge: "bg-yellow-100 text-yellow-700", label: "보통" }
+              : maxLevel === 3 ? { badge: "bg-green-100 text-green-700", label: "여유" }
+              : { badge: "bg-gray-100 text-gray-500", label: "정보없음" };
+            return (
+              <div key={`${route.routeId}-${route.direction}`} className="bg-white rounded-xl p-4 shadow-sm border border-gray-100">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <span className="font-bold text-gray-800">{route.routeNm}번</span>
+                    <span className="text-sm text-gray-500 ml-2">{route.direction}</span>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <span className={`px-2 py-0.5 rounded-md text-xs font-semibold ${cg.badge}`}>{cg.label}</span>
+                    <button
+                      onClick={() => setBookmarks(toggleBusBookmark({ routeId: route.routeId, routeNm: route.routeNm, direction: route.direction }))}
+                    >
+                      <Star className={`w-5 h-5 ${bookmarked ? "fill-yellow-400 text-yellow-400" : "text-gray-300"}`} />
+                    </button>
+                  </div>
+                </div>
+                <p className="text-xs text-gray-400 mt-1">정류소 {route.stations.length}개 구간</p>
+              </div>
+            );
+          })}
+        </div>
+      )}
+
+      {/* 버스 검색이 활성화되지 않았을 때만 지하철 그리드 표시 */}
+      {!isBusSearchActive && (
+        <>
+          <p className="text-xs text-gray-400">현재 시간({currentTimeLabel}, {dayType}) 기준 혼잡도입니다</p>
+
+          {loading && <div className="text-center py-10 text-gray-500">혼잡도 데이터 불러오는 중...</div>}
+          {error && <div className="text-center py-10 text-red-500">{error}</div>}
+
+          {!loading && !error && (
+            <div className="grid grid-cols-2 gap-3">
+              {filtered.length > 0 ? filtered.map((item: any, idx: number) => {
+                const percentage = Number(item["혼잡도"] ?? 0);
+                const congestion = getCongestionColor(percentage);
+                const displayPercent = Math.min(Math.round(percentage), 100);
+                const stationName = item["출발역"];
+                const lineName = item["호선"];
+                const direction = item["상하구분"];
+                const bookmarked = isCongestionBookmarked("subwayCongestion", stationName, lineName, direction);
+                return (
+                  <div key={idx} className="bg-white rounded-xl p-3 shadow-sm flex flex-col justify-between border border-gray-100">
+                    <div className="flex flex-col mb-2 gap-1">
+                      <div className="flex items-start justify-between gap-1">
+                        <span className="font-bold text-gray-800 text-base truncate">{stationName}</span>
+                        <div className="flex items-center gap-1 flex-shrink-0">
+                          <span className={`px-2 py-0.5 rounded-md text-[10px] whitespace-nowrap font-semibold ${congestion.badge}`}>
+                            {congestion.label}
+                          </span>
+                          <button
+                            onClick={() => {
+                              toggleCongestionBookmark({
+                                kind: "subwayCongestion",
+                                name: stationName,
+                                line: lineName,
+                                direction,
+                              });
+                              setBookmarkTick(t => t + 1);
+                            }}
+                            className="p-0.5 -mr-1"
+                            aria-label="북마크"
+                          >
+                            <Star
+                              className="w-4 h-4"
+                              fill={bookmarked ? "#facc15" : "none"}
+                              stroke={bookmarked ? "#facc15" : "#9ca3af"}
+                            />
+                          </button>
+                        </div>
+                      </div>
+                      <span className="flex items-center gap-1 text-xs text-gray-500 truncate">
+                        <span
+                          className="px-1.5 py-0.5 rounded text-[10px] font-semibold flex-shrink-0"
+                          style={{
+                            backgroundColor: getSubwayLineColor(item["호선"]),
+                            color: getReadableTextColor(getSubwayLineColor(item["호선"])),
+                          }}
+                        >
+                          {item["호선"]}
+                        </span>
+                        {item["상하구분"]}
+                      </span>
+                    </div>
+                    <div className="mt-auto pt-2">
+                      <div className="w-full bg-gray-100 rounded-full h-2">
+                        <div className={`h-2 rounded-full ${congestion.bar}`} style={{ width: `${displayPercent}%` }} />
+                      </div>
+                    </div>
+                  </div>
+                );
+              }) : (
+                <div className="col-span-2 text-center py-10 text-gray-400 text-sm">
+                  {searchQuery ? `"${searchQuery}" 검색 결과가 없습니다.` : "현재 시간대 데이터가 없습니다."}
+                </div>
+              )}
             </div>
           )}
-        </div>
+        </>
       )}
     </div>
   );
 }
+
+
+
 
 function BottomNavigation({ onSearchClick }: { onSearchClick?: () => void }) {
   const navigate = useNavigate();
