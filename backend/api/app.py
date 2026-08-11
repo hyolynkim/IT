@@ -14,10 +14,10 @@ sys.path.append(BASE_DIR)
 from models.route_finder import find_cat_optimal_route
 
 try:
-    from services.general_route import get_bus_occupancy_for_route, get_gemini_general_recommendation  # ⬅️ 추가
+    from bus_congestion import get_bus_occupancy_for_route, get_gemini_general_recommendation, get_bus_congestion_trend_for_route, preload_bus_ridership  # ⬅️ 추가
     GENERAL_ROUTE_AVAILABLE = True
-except ModuleNotFoundError as e:
-    print(f"[안내] services.general_route 모듈을 찾을 수 없어 '일반인 모드'는 비활성화됩니다: {e}")
+except ImportError as e:
+    print(f"[안내] bus_congestion 모듈을 찾을 수 없어 '일반인 모드'는 비활성화됩니다: {e}")
     GENERAL_ROUTE_AVAILABLE = False
 
 from subway_guide import (
@@ -185,41 +185,44 @@ def get_route_subway_congestion(route, weekday, hour, minute):
     각 구간은 "그 구간이 출발하는 역" 기준으로 조회하고, 상선/하선 값이
     둘 다 있으면 평균을 씁니다 (정확한 상행/하행 판별에 필요한 노선
     전체 순서 정보가 없어서, 근사치로 평균을 씁니다).
+    검색 시각을 모든 구간에 그대로 쓰지 않고, 그 구간 앞에 있는 도보·지하철·
+    버스 구간들의 소요시간을 누적해서 "실제로 그 구간에 도달하는 시각"을
+    구해 사용합니다 — 환승 후 한참 뒤에 타는 구간이라면 검색 시각이 아니라
+    그 시점의 혼잡도를 반영해요.
     데이터가 아예 없으면 None을 반환합니다."""
     data = _load_subway_congestion()
     if not data:
         return None
 
-    col = _congestion_time_column(hour, minute)
-    if col is None:
-        return None
-
     day_type = _weekday_to_day_type(weekday)
     sub_paths = route.get("sub_paths", [])
+    base_total_min = hour * 60 + minute
 
     leg_scores = []
+    elapsed = 0
     for seg in sub_paths:
-        if seg.get("traffic_type") != 1:
-            continue
-        line = normalize_line_name(seg.get("lane_name", ""))
-        station = seg.get("start_name", "")
-        if not line or not station:
-            continue
+        if seg.get("traffic_type") == 1:
+            leg_total_min = (base_total_min + elapsed) % (24 * 60)
+            leg_hour, leg_minute = divmod(leg_total_min, 60)
+            col = _congestion_time_column(leg_hour, leg_minute)
 
-        by_direction = data.get((day_type, line, station))
-        if not by_direction:
-            continue
+            line = normalize_line_name(seg.get("lane_name", ""))
+            station = seg.get("start_name", "")
+            if col is not None and line and station:
+                by_direction = data.get((day_type, line, station))
+                if by_direction:
+                    values = []
+                    for direction_row in by_direction.values():
+                        raw = direction_row.get(col)
+                        if raw not in (None, ""):
+                            try:
+                                values.append(float(raw))
+                            except ValueError:
+                                pass
+                    if values:
+                        leg_scores.append(sum(values) / len(values))
 
-        values = []
-        for direction_row in by_direction.values():
-            raw = direction_row.get(col)
-            if raw not in (None, ""):
-                try:
-                    values.append(float(raw))
-                except ValueError:
-                    pass
-        if values:
-            leg_scores.append(sum(values) / len(values))
+        elapsed += seg.get("section_time_min", 0)
 
     if not leg_scores:
         return None
@@ -231,71 +234,82 @@ def get_route_subway_congestion_trend(route, weekday, hour, minute):
     다른(오르거나 내리는) 구간을 골라서 반환합니다. 각 항목은
     {line, station, current_pct, next_pct, diff_pct, direction, minutes_until_next}
     형태입니다 (diff_pct는 양수=상승, 음수=하락, direction은 "up"/"down").
+
+    검색 시각을 모든 구간에 그대로 쓰지 않고, 그 구간 앞에 있는 도보·지하철·
+    버스 구간들의 소요시간을 누적해서 "실제로 그 구간에 도달하는 시각"을 구해
+    사용합니다 — 첫 지하철 구간은 검색 시각 그대로, 환승 후 타는 두 번째
+    지하철 구간은 "검색 시각 + 첫 구간 이동시간(+환승 도보시간)"을 기준으로
+    30분 슬롯을 비교해요. minutes_until_next도 그 구간 기준으로 계산됩니다.
+
     "몇 분 후면 혼잡도가 몇 % 더 오르는지/내려가는지" 안내 문구를 만드는 데 씁니다.
     혼잡도가 그대로거나 데이터가 없는 구간은 결과에서 빠집니다."""
     data = _load_subway_congestion()
     if not data:
         return []
 
-    total_min = hour * 60 + minute
-    floor_min = (total_min // 30) * 30
-    next_min = floor_min + 30
-    minutes_until_next = next_min - total_min
-    next_hour = (next_min // 60) % 24
-    next_minute = next_min % 60
-
-    cur_col = _congestion_time_column(hour, minute)
-    next_col = _congestion_time_column(next_hour, next_minute)
-    if cur_col is None or next_col is None:
-        return []
-
     day_type = _weekday_to_day_type(weekday)
+    base_total_min = hour * 60 + minute
     trends = []
+    elapsed = 0
 
     for seg in route.get("sub_paths", []):
-        if seg.get("traffic_type") != 1:
-            continue
-        line = normalize_line_name(seg.get("lane_name", ""))
-        station = seg.get("start_name", "")
-        if not line or not station:
-            continue
+        if seg.get("traffic_type") == 1:
+            leg_total_min = base_total_min + elapsed
+            leg_hour = (leg_total_min // 60) % 24
+            leg_minute = leg_total_min % 60
 
-        by_direction = data.get((day_type, line, station))
-        if not by_direction:
-            continue
+            floor_min = (leg_total_min // 30) * 30
+            next_min = floor_min + 30
+            minutes_until_next = next_min - leg_total_min
+            next_hour = (next_min // 60) % 24
+            next_minute = next_min % 60
 
-        cur_values, next_values = [], []
-        for row in by_direction.values():
-            raw_cur = row.get(cur_col)
-            raw_next = row.get(next_col)
-            if raw_cur not in (None, ""):
-                try:
-                    cur_values.append(float(raw_cur))
-                except ValueError:
-                    pass
-            if raw_next not in (None, ""):
-                try:
-                    next_values.append(float(raw_next))
-                except ValueError:
-                    pass
+            cur_col = _congestion_time_column(leg_hour, leg_minute)
+            next_col = _congestion_time_column(next_hour, next_minute)
 
-        if not cur_values or not next_values:
-            continue
+            line = normalize_line_name(seg.get("lane_name", ""))
+            station = seg.get("start_name", "")
 
-        cur_pct = sum(cur_values) / len(cur_values)
-        next_pct = sum(next_values) / len(next_values)
-        diff_pct = next_pct - cur_pct
+            if cur_col is not None and next_col is not None and line and station:
+                by_direction = data.get((day_type, line, station))
+                if by_direction:
+                    cur_values, next_values = [], []
+                    for row in by_direction.values():
+                        raw_cur = row.get(cur_col)
+                        raw_next = row.get(next_col)
+                        if raw_cur not in (None, ""):
+                            try:
+                                cur_values.append(float(raw_cur))
+                            except ValueError:
+                                pass
+                        if raw_next not in (None, ""):
+                            try:
+                                next_values.append(float(raw_next))
+                            except ValueError:
+                                pass
 
-        if diff_pct != 0:  # 오르든 내리든, 변화가 있는 구간만 안내 (그대로면 안내할 게 없음)
-            trends.append({
-                "line": line,
-                "station": station,
-                "current_pct": round(cur_pct),
-                "next_pct": round(next_pct),
-                "diff_pct": round(diff_pct),  # 양수=상승, 음수=하락
-                "direction": "up" if diff_pct > 0 else "down",
-                "minutes_until_next": minutes_until_next,
-            })
+                    if cur_values and next_values:
+                        cur_pct = sum(cur_values) / len(cur_values)
+                        next_pct = sum(next_values) / len(next_values)
+                        diff_pct = next_pct - cur_pct
+
+                        if diff_pct != 0:  # 오르든 내리든, 변화가 있는 구간만 안내
+                            trends.append({
+                                "line": line,
+                                "station": station,
+                                "current_pct": round(cur_pct),
+                                "next_pct": round(next_pct),
+                                "diff_pct": round(diff_pct),  # 양수=상승, 음수=하락
+                                "direction": "up" if diff_pct > 0 else "down",
+                                "minutes_until_next": minutes_until_next,
+                                # 혼잡도가 내려가는 중이면 기다렸다 이동, 올라가는 중이면 지금 이동을 추천
+                                "recommendation": (
+                                    f"{minutes_until_next}분 후에 이동하는 것을 추천합니다"
+                                    if diff_pct < 0 else "지금 이동하는 것을 추천합니다"
+                                ),
+                            })
+
+        elapsed += seg.get("section_time_min", 0)
 
     return trends
 
@@ -331,7 +345,7 @@ def _route_congestion_score(route, weekday=0, hour=9, minute=0):
     """경로의 혼잡도 점수 (낮을수록 덜 붐빔).
     1) 지하철 구간: subway_congestion.csv의 실제 혼잡도(%)를 0~2 스케일로 환산해서 사용.
        (34% 이하=여유(0), 34~80%=보통(1), 80%+=혼잡(2) — 서울교통공사가 실제로 쓰는 구간 기준)
-    2) 지하철 데이터가 없으면, 버스 구간 혼잡도(services/general_route.py)를 대신 사용.
+    2) 지하철 데이터가 없으면, 버스 구간 혼잡도(bus_congestion.py)를 대신 사용.
        (지금은 실제 API 연동 전이라 항상 빈 값 → 결과적으로 0)
     둘 다 없으면 0(=모름, 순위에 영향 안 줌)을 반환합니다."""
     subway_pct = get_route_subway_congestion(route, weekday, hour, minute)
@@ -344,7 +358,7 @@ def _route_congestion_score(route, weekday=0, hour=9, minute=0):
 
     if not GENERAL_ROUTE_AVAILABLE:
         return 0
-    occupancy = get_bus_occupancy_for_route(route.get("sub_paths", []), hour=hour)
+    occupancy = get_bus_occupancy_for_route(route.get("sub_paths", []), hour=hour, minute=minute)
     if not occupancy:
         return 0
     return sum(_CONGESTION_LEVEL_SCORE.get(o.get("congestion"), 1) for o in occupancy) / len(occupancy)
@@ -354,8 +368,6 @@ def select_accessibility_routes(routes, accessibility_type=None, weekday=0, hour
     """노약자/임산부 모드에서 화면에 보여줄 경로 5개를 고릅니다.
 
     accessibility_type에 따라 "AI 추천 경로" 3개를 고르는 기본 기준이 달라집니다:
-      - "elderly" (노약자): 도보 시간 최소화를 최우선
-      - "pregnant" (임산부): 혼잡도(버스 구간, 지금은 목업 데이터) 최소화를 최우선
       - 그 외("both" 포함) / None: 환승 → 도보 순 (기존과 동일)
 
     - 뒤 2개: 남은 경로 중 요금이 가장 저렴한 것 1개("최소 금액"),
@@ -376,9 +388,7 @@ def select_accessibility_routes(routes, accessibility_type=None, weekday=0, hour
     else:
         burden_sorted = sorted(routes, key=_walk_burden_score)
 
-    # 부담이 비슷한 상위 후보들 중, 엘리베이터 정보가 실제로 확인되는 경로를
-    # 우선하기 위해 상위 몇 개만 미리 엘리베이터 조회를 해둡니다 (전체를 다 조회하면
-    # 공공데이터 API를 너무 많이 호출하게 돼서, 상위 후보로 범위를 좁혔어요).
+
     shortlist = burden_sorted[:8]
     for r in shortlist:
         r["_elevator_info_cache"] = get_elevator_tip_for_route(r)
@@ -425,10 +435,6 @@ def select_accessibility_routes(routes, accessibility_type=None, weekday=0, hour
     burden_routes = shortlist[:3]
     chosen_ids = {id(r) for r in burden_routes}
 
-    # (AI 추천 경로를 제외한 나머지 중에서만 찾으면, 진짜 최저가/최적 경로가
-    # 이미 AI 추천 쪽에 들어있을 때 "최소 금액"이 실제로 더 비싼 경로를
-    # 가리키는 모순이 생길 수 있어서요.) 이미 AI 추천 경로 중 하나가 그
-    # 기준으로도 1등이면, 같은 경로를 중복된 탭으로 또 보여주지 않고 건너뜁니다.
     true_cheapest = min(routes, key=lambda r: r.get("payment_krw", 0))
     cost_route = None if id(true_cheapest) in chosen_ids else true_cheapest
     if cost_route is not None:
@@ -648,15 +654,10 @@ def get_optimal_route():
     rush_hour = is_rush_hour(hour, minute, weekday)
     rush_hour_result = None
 
-    # 교통약자 모드(mode != 'general')일 때만 엘리베이터 인접 하차칸 정보를 조회합니다.
-    # (러시아워 여부와 상관없이 항상 계산 — 엘리베이터 위치는 혼잡도와 무관한 정보라서요)
-    # 화면에서 사용자가 다른 경로를 선택할 수 있으므로, 상위 경로들 각각에 대해 계산해
-    # 프론트가 선택된 경로(selectedIdx)에 맞는 정보를 보여줄 수 있게 합니다.
-    # transfer_info_list의 각 원소는 그 경로에 있는 "모든" 환승 지점 리스트입니다
-    # (환승이 여러 번 있는 경로도 전부 반영 — 예전엔 첫 환승만 반영됐던 부분 수정).
     elevator_info_list = []
     transfer_info_list = []
     bus_occupancy_list = []
+    bus_congestion_trend_list = []
     subway_congestion_trend_list = []
     if mode != 'general' and routes:
         for r in routes[:10]:
@@ -665,9 +666,12 @@ def get_optimal_route():
             transfer_info_list.append(get_transfer_tips_for_route(r))
             # 버스 구간 실시간 혼잡도 — 일반 모드에서 쓰던 함수를 교통약자 모드에도 재사용
             if GENERAL_ROUTE_AVAILABLE:
-                bus_occupancy_list.append(get_bus_occupancy_for_route(r.get("sub_paths", []), hour=hour))
+                bus_occupancy_list.append(get_bus_occupancy_for_route(r.get("sub_paths", []), hour=hour, minute=minute))
+                # 버스 구간별로 "다음 정시엔 혼잡도가 오르는지/내리는지" 안내
+                bus_congestion_trend_list.append(get_bus_congestion_trend_for_route(r.get("sub_paths", []), hour, minute))
             else:
                 bus_occupancy_list.append([])
+                bus_congestion_trend_list.append([])
             # 지하철 구간별로 "다음 30분 뒤 혼잡도가 오르는지" 안내
             subway_congestion_trend_list.append(get_route_subway_congestion_trend(r, weekday, hour, minute))
 
@@ -679,14 +683,14 @@ def get_optimal_route():
         if mode == 'general':
             if GENERAL_ROUTE_AVAILABLE:
                 # ⬅️ 일반인 모드: 실시간 여석 반영
-                occupancy_data = get_bus_occupancy_for_route(routes[0].get("sub_paths", []), hour=hour)
+                occupancy_data = get_bus_occupancy_for_route(routes[0].get("sub_paths", []), hour=hour, minute=minute)
                 rush_hour_result = get_gemini_general_recommendation(
                     routes, occupancy_data, start, end, hour, minute, weekday
                 )
             else:
                 rush_hour_result = {
                     "recommended_index": 0,
-                    "rush_hour_tip": "일반인 모드 기능(services.general_route)이 아직 준비되지 않았습니다.",
+                    "rush_hour_tip": "일반인 모드 기능(bus_congestion)이 아직 준비되지 않았습니다.",
                     "alternative": "",
                 }
         else:
@@ -706,10 +710,11 @@ def get_optimal_route():
     final_result["transfer_info"] = first_route_first_transfer
     # elevator_info_list: 경로별 엘리베이터 안내 (routes 배열과 동일한 순서/길이)
     # transfer_info_list: 경로별 "환승 지점 리스트" (각 원소가 그 경로의 모든 환승 정보 배열)
-    # bus_occupancy_list: 경로별 버스 구간 혼잡도 (services.general_route 없으면 전부 빈 배열)
+    # bus_occupancy_list: 경로별 버스 구간 혼잡도 (bus_congestion 없으면 전부 빈 배열)
     final_result["elevator_info_list"] = elevator_info_list
     final_result["transfer_info_list"] = transfer_info_list
     final_result["bus_occupancy_list"] = bus_occupancy_list
+    final_result["bus_congestion_trend_list"] = bus_congestion_trend_list
     final_result["subway_congestion_trend_list"] = subway_congestion_trend_list
 
     return jsonify(final_result)
@@ -797,5 +802,7 @@ def get_elevator_stations():
 
 
 if __name__ == '__main__':
+    if GENERAL_ROUTE_AVAILABLE:
+        preload_bus_ridership()  # 서버 뜨기 전에 미리 로딩 (첫 검색이 느려지는 것 방지)
     port = int(os.environ.get('PORT', 5000))
     app.run(host='0.0.0.0', port=port)
