@@ -777,23 +777,79 @@ function CongestionTab() {
 
     const isSeoul = selectedBusCity === "seoul";
 
-    const url = isSeoul
-      ? `${ROUTE_API_BASE}/api/congestion/route?routeNm=${encodeURIComponent(busQuery)}`
-      : `${ROUTE_API_BASE}/bus/search?routeNm=${encodeURIComponent(busQuery)}${
-          selectedBusCity ? `&cityCode=${selectedBusCity}` : ""
-        }`;
+    const fetchSeoul = () =>
+      fetch(`${ROUTE_API_BASE}/api/congestion/route?routeNm=${encodeURIComponent(busQuery)}`)
+        .then(res => res.json());
 
-    fetch(url)
-      .then(res => res.json())
-      .then(data => {
-        if (!data.routes || data.routes.length === 0) {
-          setBusError(data.error || "검색 결과가 없습니다.");
-          setBusResults([]);
-        } else {
-          setBusResults(data.routes);
-          setBusSource(isSeoul ? "stats" : "gbis");
+    const fetchTago = () =>
+      fetch(
+        `${ROUTE_API_BASE}/bus/search?routeNm=${encodeURIComponent(busQuery)}${
+          selectedBusCity ? `&cityCode=${selectedBusCity}` : ""
+        }`
+      ).then(res => res.json());
+
+    if (isSeoul) {
+      // 서울을 명시적으로 선택한 경우: 서울 API만 조회
+      fetchSeoul()
+        .then(data => {
+          if (!data.routes || data.routes.length === 0) {
+            setBusError(data.error || "검색 결과가 없습니다.");
+            setBusResults([]);
+          } else {
+            setBusResults(data.routes);
+            setBusSource("stats");
+          }
+          setBusLoading(false);
+        })
+        .catch(() => {
+          setBusError("버스 정보를 불러오지 못했습니다.");
+          setBusLoading(false);
+        });
+      return;
+    }
+
+    // 특정 도시(성남 등)를 선택한 경우: 해당 도시로 TAGO만 조회 (자동 폴백 없음)
+    if (selectedBusCity) {
+      fetchTago()
+        .then(data => {
+          if (!data.routes || data.routes.length === 0) {
+            setBusError(data.error || "검색 결과가 없습니다.");
+            setBusResults([]);
+          } else {
+            setBusResults(data.routes);
+            setBusSource("gbis");
+          }
+          setBusLoading(false);
+        })
+        .catch(() => {
+          setBusError("버스 정보를 불러오지 못했습니다.");
+          setBusLoading(false);
+        });
+      return;
+    }
+
+    // "전체" 선택 시: 서울(통계) 먼저 시도 -> 없으면 TAGO(9개 도시)로 폴백
+    // (서울은 항상 값이 채워진 통계 데이터라 우선 시도하는 게 더 안정적)
+    fetchSeoul()
+      .then(seoulData => {
+        if (seoulData.routes && seoulData.routes.length > 0) {
+          setBusResults(seoulData.routes);
+          setBusSource("stats");
+          setSelectedBusCity("seoul"); // 서울에서 찾았으니 필터도 서울로 자동 전환
+          setBusLoading(false);
+          return;
         }
-        setBusLoading(false);
+        // 서울에서 못 찾음 -> TAGO(9개 도시)로 자동 재시도
+        return fetchTago().then(tagoData => {
+          if (tagoData.routes && tagoData.routes.length > 0) {
+            setBusResults(tagoData.routes);
+            setBusSource("gbis");
+          } else {
+            setBusError("검색 결과가 없습니다.");
+            setBusResults([]);
+          }
+          setBusLoading(false);
+        });
       })
       .catch(() => {
         setBusError("버스 정보를 불러오지 못했습니다.");
@@ -801,14 +857,15 @@ function CongestionTab() {
       });
   };
 
-  // 버스 검색창을 비우면 다시 지하철 그리드가 보이도록 리셋
+
   const handleBusQueryChange = (value: string) => {
-    setBusQuery(value);
-    if (!value) {
-      setBusResults([]);
-      setBusError(null);
-    }
-  };
+      setBusQuery(value);
+      if (!value) {
+        setBusResults([]);
+        setBusError(null);
+      }
+    };
+  
 
   const now = new Date();
   const currentHour = now.getHours();
@@ -1011,34 +1068,49 @@ function CongestionTab() {
         </div>
       )}
 
-      {/* 그 외 도시(실시간 GBIS) 검색 결과 */}
+      
+      {/* 그 외 도시(실시간 GBIS/TAGO) 검색 결과: 서울과 동일하게 정류소별 카드로 표시 */}
       {busResults.length > 0 && busSource === "gbis" && (
         <div className="space-y-3">
           {busResults.map((route) => {
             const bookmarked = isBusBookmarked(bookmarks, route.routeId, route.direction);
-            const levels = route.stations.map((s: any) => Number(s.congestionLevel));
-            const maxLevel = levels.length ? Math.max(...levels) : 0;
-            const cg = maxLevel === 5 ? { badge: "bg-red-100 text-red-700", label: "혼잡" }
-              : maxLevel === 4 ? { badge: "bg-yellow-100 text-yellow-700", label: "보통" }
-              : maxLevel === 3 ? { badge: "bg-green-100 text-green-700", label: "여유" }
-              : { badge: "bg-gray-100 text-gray-500", label: "정보없음" };
             return (
-              <div key={`${route.routeId}-${route.direction}`} className="bg-white rounded-xl p-4 shadow-sm border border-gray-100">
+              <div key={`${route.routeId}-${route.direction}`} className="bg-white rounded-xl p-4 shadow-sm border border-gray-100 space-y-3">
                 <div className="flex items-center justify-between">
                   <div>
                     <span className="font-bold text-gray-800">{route.routeNm}번</span>
                     <span className="text-sm text-gray-500 ml-2">{route.direction}</span>
                   </div>
-                  <div className="flex items-center gap-2">
-                    <span className={`px-2 py-0.5 rounded-md text-xs font-semibold ${cg.badge}`}>{cg.label}</span>
-                    <button
-                      onClick={() => setBookmarks(toggleBusBookmark({ routeId: route.routeId, routeNm: route.routeNm, direction: route.direction }))}
-                    >
-                      <Star className={`w-5 h-5 ${bookmarked ? "fill-yellow-400 text-yellow-400" : "text-gray-300"}`} />
-                    </button>
-                  </div>
+                  <button
+                    onClick={() => setBookmarks(toggleBusBookmark({ routeId: route.routeId, routeNm: route.routeNm, direction: route.direction }))}
+                  >
+                    <Star className={`w-5 h-5 ${bookmarked ? "fill-yellow-400 text-yellow-400" : "text-gray-300"}`} />
+                  </button>
                 </div>
-                <p className="text-xs text-gray-400 mt-1">정류소 {route.stations.length}개 구간</p>
+                <p className="text-xs text-gray-400">경유 정류소 {route.stations.length}개</p>
+
+                <div className="space-y-2 max-h-96 overflow-y-auto pr-1">
+                  {route.stations.map((s: any, idx: number) => {
+                    const level = Number(s.congestionLevel);
+                    const cg = level === 5 ? { badge: "bg-red-100 text-red-700", bar: "bg-red-500", pct: 100, label: "혼잡" }
+                      : level === 4 ? { badge: "bg-yellow-100 text-yellow-700", bar: "bg-yellow-500", pct: 60, label: "보통" }
+                      : level === 3 ? { badge: "bg-green-100 text-green-700", bar: "bg-green-500", pct: 25, label: "여유" }
+                      : { badge: "bg-gray-100 text-gray-500", bar: "bg-gray-300", pct: 0, label: "도착예정정보없음" };
+                    return (
+                      <div key={idx} className="border border-gray-100 rounded-lg p-2.5">
+                        <div className="flex items-center justify-between mb-1.5">
+                          <span className="text-sm font-semibold text-gray-800 truncate">{s.stationName}</span>
+                          <span className={`px-2 py-0.5 rounded-full text-[11px] font-semibold flex-shrink-0 ml-2 ${cg.badge}`}>
+                            {cg.label}
+                          </span>
+                        </div>
+                        <div className="bg-gray-100 rounded-full h-1.5">
+                          <div className={`h-1.5 rounded-full ${cg.bar}`} style={{ width: `${cg.pct}%` }} />
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
               </div>
             );
           })}
