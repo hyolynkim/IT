@@ -237,11 +237,20 @@ def select_general_routes(routes):
     chosen_ids = set()
     result = []
 
-    def pick(label, key_func, category, filter_func=None):
+    def pick(label, key_func, category, filter_func=None, strict_filter_func=None):
         candidates = [r for r in routes if id(r) not in chosen_ids]
+        if strict_filter_func:
+            # 반드시 지켜야 하는 조건(혼잡 위험 회피 등) — 만족하는 후보가 하나도
+            # 없으면 "그나마 나은 걸로" 폴백하지 않고 이 카테고리는 그냥 건너뜀.
+            # (예전엔 여기도 물러서는 필터였어서, 후보 10개가 전부 위험한 버스에
+            # 의존하는 구간이면 결국 위험한 경로가 "여유 경로"로 뽑히는 문제가 있었음)
+            candidates = [r for r in candidates if strict_filter_func(r)]
+            if not candidates:
+                return
         if filter_func:
-            # 조건에 맞는 후보가 있으면 그 안에서만 고르고, 하나도 없으면(예: 후보
-            # 전부 광역버스 포함) 어쩔 수 없이 전체 후보 중에서 고름.
+            # 이건 "가능하면 지키고 싶은" 선호 조건 — 조건에 맞는 후보가 있으면 그
+            # 안에서만 고르고, 하나도 없으면 (엄격 조건은 이미 위에서 통과했으므로)
+            # 어쩔 수 없이 남은 후보 중에서 고름.
             narrowed = [r for r in candidates if filter_func(r)]
             if narrowed:
                 candidates = narrowed
@@ -254,17 +263,19 @@ def select_general_routes(routes):
         result.append(best)
 
     no_risk = lambda r: not _has_congestion_risk(r)
-    no_risk_no_express = lambda r: no_risk(r) and not r.get("has_express_bus", False)
+    no_express = lambda r: not r.get("has_express_bus", False)
 
-    # AI 러시아워 3개 — 쾌적/탑승 가능성 중심. 혼잡 위험 있는 경로는 후보에서 제외.
-    pick("AI 추천 경로", lambda r: r.get("estimated_comfort_time_min", 0), "ai_optimal", filter_func=no_risk)
+    # AI 러시아워 3개 — 쾌적/탑승 가능성 중심. 혼잡 위험 있는 경로는 무조건 제외
+    # (strict_filter_func) — 안전한 후보가 없으면 그 자리는 그냥 안 채움.
+    pick("AI 추천 경로", lambda r: r.get("estimated_comfort_time_min", 0), "ai_optimal", strict_filter_func=no_risk)
     pick(
         "여유 경로",
         lambda r: r.get("estimated_comfort_time_min", 0),
         "ai_comfortable",
-        filter_func=no_risk_no_express,
+        strict_filter_func=no_risk,
+        filter_func=no_express,  # 광역버스 자체를 안 타면 더 좋지만, 안전하기만 하면 완화 가능
     )
-    pick("최소 환승", lambda r: r.get("transfer_count", 0), "ai_fewest_transfer", filter_func=no_risk)
+    pick("최소 환승", lambda r: r.get("transfer_count", 0), "ai_fewest_transfer", strict_filter_func=no_risk)
 
     # 일반 경로 3개 — 스펙만 보는 기준 (쾌적함/혼잡위험 고려 없음, 다른 지도앱과 같은 관점)
     pick("최소 시간", lambda r: r.get("original_time_min", 0), "general_fastest")
@@ -595,11 +606,14 @@ def get_optimal_route():
                 # select_general_routes가 "혼잡 위험 있는 경로는 AI 추천에서 제외"하려면
                 # 고르기 전에 여석 정보가 이미 채워져 있어야 함 — 그래서 여기서 (예전엔
                 # 최종 선택된 6개에 대해서만 하던 걸) 더 넓은 후보 풀에 대해 먼저 계산함.
-                # 후보 전체(최대 20개 안팎)를 다 하면 느려지니, comfort_time 기준으로
-                # 이미 정렬돼 있는 상위 10개 정도로 범위를 좁힘 — 같은 정류소/버스
-                # 조합은 bus_congestion_cache로 재사용해서 GBIS 중복 호출도 줄임.
+                # 안전한 후보를 못 찾으면 그 카테고리를 그냥 건너뛰게 바꿨기 때문에
+                # (혼잡한 경로로 대충 채우지 않음), 후보 폭이 너무 좁으면 AI 추천
+                # 자리가 자주 비게 됨 — 그래서 15개까지 넓힘. 후보 전체(최대 20개
+                # 안팎)를 다 하면 느려지니 comfort_time 기준으로 이미 정렬돼 있는
+                # 상위 15개로 제한. 같은 정류소/버스 조합은 bus_congestion_cache로
+                # 재사용해서 GBIS 중복 호출도 줄임.
                 bus_congestion_cache = {}
-                candidate_pool = routes[:10]
+                candidate_pool = routes[:15]
                 for r in candidate_pool:
                     r["sub_paths"] = get_bus_occupancy_for_route(
                         r.get("sub_paths", []), cache=bus_congestion_cache
