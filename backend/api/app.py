@@ -229,6 +229,66 @@ def get_route_subway_congestion(route, weekday, hour, minute):
     return sum(leg_scores) / len(leg_scores)
 
 
+def _subway_congestion_label(pct):
+    """서울교통공사가 실제로 쓰는 구간 기준으로 혼잡도 % → 등급 문자열 환산."""
+    if pct < 34:
+        return "여유"
+    if pct < 80:
+        return "보통"
+    return "혼잡"
+
+
+def get_route_subway_congestion_list(route, weekday, hour, minute):
+    """경로에 있는 지하철 구간들 각각의 "지금 혼잡도(%)"를 반환합니다.
+    (버스의 get_bus_occupancy_for_route와 같은 역할 — 오르내림과 무관하게,
+    그 구간 시점의 현재 혼잡도를 그대로 보여줍니다.)
+    검색 시각을 모든 구간에 그대로 쓰지 않고, 그 구간 앞에 있는 도보·지하철·
+    버스 구간들의 소요시간을 누적해서 "실제로 그 구간에 도달하는 시각"을
+    구해 사용합니다. 각 항목은 {line, station, current_pct, congestion} 형태이고,
+    데이터가 없는 구간은 결과에서 빠집니다."""
+    data = _load_subway_congestion()
+    if not data:
+        return []
+
+    day_type = _weekday_to_day_type(weekday)
+    base_total_min = hour * 60 + minute
+    result = []
+    elapsed = 0
+
+    for seg in route.get("sub_paths", []):
+        if seg.get("traffic_type") == 1:
+            leg_total_min = (base_total_min + elapsed) % (24 * 60)
+            leg_hour, leg_minute = divmod(leg_total_min, 60)
+            col = _congestion_time_column(leg_hour, leg_minute)
+
+            line = normalize_line_name(seg.get("lane_name", ""))
+            station = seg.get("start_name", "")
+
+            if col is not None and line and station:
+                by_direction = data.get((day_type, line, station))
+                if by_direction:
+                    values = []
+                    for direction_row in by_direction.values():
+                        raw = direction_row.get(col)
+                        if raw not in (None, ""):
+                            try:
+                                values.append(float(raw))
+                            except ValueError:
+                                pass
+                    if values:
+                        cur_pct = sum(values) / len(values)
+                        result.append({
+                            "line": line,
+                            "station": station,
+                            "current_pct": round(cur_pct),
+                            "congestion": _subway_congestion_label(cur_pct),
+                        })
+
+        elapsed += seg.get("section_time_min", 0)
+
+    return result
+
+
 def get_route_subway_congestion_trend(route, weekday, hour, minute):
     """경로에 있는 지하철 구간들 중, 지금 혼잡도와 "다음 30분 슬롯" 혼잡도가
     다른(오르거나 내리는) 구간을 골라서 반환합니다. 각 항목은
@@ -302,10 +362,13 @@ def get_route_subway_congestion_trend(route, weekday, hour, minute):
                                 "diff_pct": round(diff_pct),  # 양수=상승, 음수=하락
                                 "direction": "up" if diff_pct > 0 else "down",
                                 "minutes_until_next": minutes_until_next,
-                                # 혼잡도가 내려가는 중이면 기다렸다 이동, 올라가는 중이면 지금 이동을 추천
+                                # 다음 슬롯까지 30분 넘게 남았으면 추천 문구를 안 보여줍니다
+                                # (지하철은 30분 단위라 사실상 거의 항상 30분 미만이에요).
                                 "recommendation": (
-                                    f"{minutes_until_next}분 후에 이동하는 것을 추천합니다"
-                                    if diff_pct < 0 else "지금 이동하는 것을 추천합니다"
+                                    (
+                                        f"{minutes_until_next}분 후에 이동하는 것을 추천합니다"
+                                        if diff_pct < 0 else "지금 이동하는 것을 추천합니다"
+                                    ) if minutes_until_next < 30 else None
                                 ),
                             })
 
@@ -368,6 +431,8 @@ def select_accessibility_routes(routes, accessibility_type=None, weekday=0, hour
     """노약자/임산부 모드에서 화면에 보여줄 경로 5개를 고릅니다.
 
     accessibility_type에 따라 "AI 추천 경로" 3개를 고르는 기본 기준이 달라집니다:
+      - "elderly" (노약자): 도보 시간 최소화를 최우선
+      - "pregnant" (임산부): 혼잡도(버스 구간, 지금은 목업 데이터) 최소화를 최우선
       - 그 외("both" 포함) / None: 환승 → 도보 순 (기존과 동일)
 
     - 뒤 2개: 남은 경로 중 요금이 가장 저렴한 것 1개("최소 금액"),
@@ -388,7 +453,9 @@ def select_accessibility_routes(routes, accessibility_type=None, weekday=0, hour
     else:
         burden_sorted = sorted(routes, key=_walk_burden_score)
 
-
+    # 부담이 비슷한 상위 후보들 중, 엘리베이터 정보가 실제로 확인되는 경로를
+    # 우선하기 위해 상위 몇 개만 미리 엘리베이터 조회를 해둡니다 (전체를 다 조회하면
+    # 공공데이터 API를 너무 많이 호출하게 돼서, 상위 후보로 범위를 좁혔어요).
     shortlist = burden_sorted[:8]
     for r in shortlist:
         r["_elevator_info_cache"] = get_elevator_tip_for_route(r)
@@ -435,6 +502,11 @@ def select_accessibility_routes(routes, accessibility_type=None, weekday=0, hour
     burden_routes = shortlist[:3]
     chosen_ids = {id(r) for r in burden_routes}
 
+    # "최소 금액"/"최적 경로"는 전체 후보 중 진짜 1등만 인정합니다.
+    # (AI 추천 경로를 제외한 나머지 중에서만 찾으면, 진짜 최저가/최적 경로가
+    # 이미 AI 추천 쪽에 들어있을 때 "최소 금액"이 실제로 더 비싼 경로를
+    # 가리키는 모순이 생길 수 있어서요.) 이미 AI 추천 경로 중 하나가 그
+    # 기준으로도 1등이면, 같은 경로를 중복된 탭으로 또 보여주지 않고 건너뜁니다.
     true_cheapest = min(routes, key=lambda r: r.get("payment_krw", 0))
     cost_route = None if id(true_cheapest) in chosen_ids else true_cheapest
     if cost_route is not None:
@@ -654,10 +726,17 @@ def get_optimal_route():
     rush_hour = is_rush_hour(hour, minute, weekday)
     rush_hour_result = None
 
+    # 교통약자 모드(mode != 'general')일 때만 엘리베이터 인접 하차칸 정보를 조회합니다.
+    # (러시아워 여부와 상관없이 항상 계산 — 엘리베이터 위치는 혼잡도와 무관한 정보라서요)
+    # 화면에서 사용자가 다른 경로를 선택할 수 있으므로, 상위 경로들 각각에 대해 계산해
+    # 프론트가 선택된 경로(selectedIdx)에 맞는 정보를 보여줄 수 있게 합니다.
+    # transfer_info_list의 각 원소는 그 경로에 있는 "모든" 환승 지점 리스트입니다
+    # (환승이 여러 번 있는 경로도 전부 반영 — 예전엔 첫 환승만 반영됐던 부분 수정).
     elevator_info_list = []
     transfer_info_list = []
     bus_occupancy_list = []
     bus_congestion_trend_list = []
+    subway_congestion_list = []
     subway_congestion_trend_list = []
     if mode != 'general' and routes:
         for r in routes[:10]:
@@ -672,7 +751,8 @@ def get_optimal_route():
             else:
                 bus_occupancy_list.append([])
                 bus_congestion_trend_list.append([])
-            # 지하철 구간별로 "다음 30분 뒤 혼잡도가 오르는지" 안내
+            # 지하철 구간별로 "지금 평균 혼잡도"와 "다음 30분 뒤 혼잡도가 오르는지" 안내
+            subway_congestion_list.append(get_route_subway_congestion_list(r, weekday, hour, minute))
             subway_congestion_trend_list.append(get_route_subway_congestion_trend(r, weekday, hour, minute))
 
     first_route_first_transfer = (
@@ -716,6 +796,7 @@ def get_optimal_route():
     final_result["bus_occupancy_list"] = bus_occupancy_list
     final_result["bus_congestion_trend_list"] = bus_congestion_trend_list
     final_result["subway_congestion_trend_list"] = subway_congestion_trend_list
+    final_result["subway_congestion_list"] = subway_congestion_list
 
     return jsonify(final_result)
 
