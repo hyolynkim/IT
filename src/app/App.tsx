@@ -483,6 +483,7 @@ function MainScreen() {
     { type: "팁", emoji: "💡", text: "출퇴근 시간대엔 전 정거장 탑승으로 자리를 확보하세요" },
     { type: "팁", emoji: "🚌", text: "광역버스 혼잡도는 실시간으로 반영됩니다" },
     { type: "팁", emoji: "⏱️", text: "혼잡도 반영 경로는 기본 경로보다 쾌적하게 이동할 수 있어요" },
+    { type: "안내", emoji: "🤖", text: "AI 추천 경로는 러시아워 시간대(평일 5:30-7:30·16:30-19:30, 금~일 21-23시)에만 제공돼요" },
   ];
 
   useEffect(() => {
@@ -1407,6 +1408,16 @@ function RouteResultScreen() {
             })}
           </div>
 
+          {!isAccessibilityMode && !isRushHour && (
+            <div className="mx-3 mt-3 bg-blue-50 border border-blue-100 rounded-lg px-3 py-2 flex items-start gap-2">
+              <span className="text-sm flex-shrink-0">💡</span>
+              <p className="text-xs text-blue-700 leading-relaxed">
+                지금은 러시아워 시간대가 아니라서 AI 추천 경로 대신 일반 경로만 보여드려요.
+                AI 추천은 평일 05:30~07:30·16:30~19:30, 금~일요일은 21:00~23:00에도 한 번 더 적용돼요.
+              </p>
+            </div>
+          )}
+
           <div className="flex-1 overflow-y-auto p-4 space-y-4">
             <div className={`bg-white rounded-xl p-4 shadow-md border-2 ${isRushHour && selectedIdx < 3 ? "border-orange-300" : "border-blue-200"}`}>
               <div className="flex items-center justify-between mb-4">
@@ -1546,7 +1557,10 @@ function RouteResultScreen() {
                   <TrendingDown className="w-5 h-5 text-blue-600 mt-0.5" />
                   <div>
                     <h4 className="font-semibold text-blue-900 mb-1">혼잡도 정보</h4>
-                    <p className="text-sm text-blue-800">현재는 러시아워 시간대가 아닙니다.</p>
+                    <p className="text-sm text-blue-800">
+                      현재는 러시아워 시간대가 아니라 AI 추천이 제공되지 않아요.
+                      평일 05:30~07:30·16:30~19:30, 금~일요일은 21:00~23:00에도 한 번 더 적용돼요.
+                    </p>
                   </div>
                 </div>
               </div>
