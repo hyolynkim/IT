@@ -37,6 +37,26 @@ function getAvatar(avatarId?: string) {
 }
 // ────────────────────────────────────────────────────────────────
 
+// ── 버스 여석/혼잡도 뱃지 ─────────────────────────────────────────
+// level 옆에 실시간 여석 수 등 상세 label("빈자리 12석" 등)도 같이 보여줌
+function CongestionBadge({ level, label }: { level: string; label?: string }) {
+  const styles: Record<string, string> = {
+    "여유": "bg-green-100 text-green-700",
+    "보통": "bg-yellow-100 text-yellow-700",
+    "혼잡": "bg-red-100 text-red-700",
+    "매우혼잡": "bg-red-200 text-red-800",
+    "판단불가": "bg-gray-100 text-gray-500",
+  };
+  return (
+    <span className="inline-flex items-center gap-1">
+      <span className={`px-2 py-0.5 rounded-full text-[11px] font-semibold ${styles[level] || styles["판단불가"]}`}>
+        {level}
+      </span>
+      {label && <span className="text-[11px] text-gray-400">{label}</span>}
+    </span>
+  );
+}
+// ────────────────────────────────────────────────────────────────
 
 // ── 검색 기록 관리 ──────────────────────────────────────────────
 const HISTORY_KEY = "searchHistory";
@@ -1090,12 +1110,15 @@ function RouteResultScreen() {
                           <div className="font-semibold text-gray-800 text-sm">
                             {sub.traffic_type === 3 ? "도보 이동" : `${sub.start_name} ➡️ ${sub.end_name}`}
                           </div>
-                          <div className="text-xs text-gray-500 mt-0.5">
+                          <div className="text-xs text-gray-500 mt-0.5 flex items-center flex-wrap gap-1.5">
                             {sub.traffic_type !== 3 && sub.lane_name && (
-
+                              <span className="font-medium text-gray-700">[{sub.lane_name}]</span>
                             )}
                             <span>{formatDuration(sub.section_time_min)} 소요</span>
-                            {sub.station_count > 0 && <span> ({sub.station_count}개 정거장)</span>}
+                            {sub.station_count > 0 && <span>({sub.station_count}개 정거장)</span>}
+                            {sub.traffic_type === 2 && sub.bus_congestion && (
+                              <CongestionBadge level={sub.bus_congestion.level} label={sub.bus_congestion.label} />
+                            )}
                           </div>
                         </div>
                       </div>
