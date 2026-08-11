@@ -1036,6 +1036,12 @@ function RouteResultScreen() {
                 )}
               </div>
 
+              {isAccessibilityMode && currentRoute?.ai_reason && (
+                <p className="text-xs text-orange-700 bg-orange-50 border border-orange-100 rounded-lg px-3 py-2 mb-4">
+                  💡 {currentRoute.ai_reason}
+                </p>
+              )}
+
               <div className={`grid ${getTimeDiff(currentRoute) ? "grid-cols-3" : "grid-cols-2"} gap-4 text-center mb-4`}>
                 <div>
                   <div className="text-2xl font-bold text-blue-600">{formatDurationMin(currentRoute.estimated_comfort_time_min)}</div>
