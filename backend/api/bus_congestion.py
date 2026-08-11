@@ -1,0 +1,246 @@
+"""
+버스 실시간(에 가까운) 혼잡도 — 서울시 공개 데이터 기반
+
+⚠️ "실시간"은 아니고, 서울시가 공개한 "버스노선별 정류장별 시간대별
+승하차 인원 정보"(월별 집계, bus_ridership.csv)를 씁니다. 정류장별 좌석 수를
+모르기 때문에 정확한 여석 %는 계산할 수 없고, 그 대신 "그 노선·정류장·시간대에
+평균적으로 몇 명이 타는지"를 보고 혼잡도 등급(여유/보통/혼잡)을 근사해서 알려줍니다.
+
+일반경로팀이 실제 실시간 여석 API를 연동한 파일을 넘겨주면, 이 파일을
+그대로 덮어쓰기만 하면 돼요 — app.py 쪽 코드는 손댈 필요 없습니다
+(함수 이름과 인자만 맞으면 됩니다).
+"""
+
+import os
+import csv
+
+BUS_RIDERSHIP_CSV_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "bus_ridership.csv")
+_bus_ridership_cache = None
+
+# 탑승 인원 수 기준 혼잡도 등급 임계값 (이 데이터셋의 러시아워 시간대 분포를
+# 참고해서 정한 근사치 기준입니다 — 실제 버스 정원과는 무관합니다)
+_LOW_THRESHOLD = 150
+_HIGH_THRESHOLD = 500
+
+
+def _load_bus_ridership():
+    global _bus_ridership_cache
+    if _bus_ridership_cache is not None:
+        return _bus_ridership_cache
+
+    data = {}
+    if os.path.exists(BUS_RIDERSHIP_CSV_PATH):
+        # 서울시 CSV는 내려받는 방식에 따라 CP949(EUC-KR 계열) 또는 UTF-8(-SIG)로
+        # 올 수 있어서, 둘 다 순서대로 시도합니다.
+        rows = None
+        last_error = None
+        for encoding in ("utf-8-sig", "cp949"):
+            try:
+                with open(BUS_RIDERSHIP_CSV_PATH, encoding=encoding) as f:
+                    rows = list(csv.DictReader(f))
+                break
+            except (UnicodeDecodeError, UnicodeError) as e:
+                last_error = e
+                continue
+            except Exception as e:
+                last_error = e
+                break
+
+        if rows is None:
+            print(f"[안내] 버스 승하차 인원 CSV 로딩 실패: {last_error}")
+        else:
+            for row in rows:
+                route_no = (row.get("노선번호") or "").strip()
+                raw_station = (row.get("역명") or "").strip()
+                # "종로2가사거리(00089)"처럼 뒤에 ARS번호가 괄호로 붙어있어서 떼어냅니다.
+                station = raw_station.split("(")[0].strip()
+                key = (route_no, station)
+                data.setdefault(key, []).append(row)
+
+    _bus_ridership_cache = data
+    return data
+
+
+def preload_bus_ridership():
+    """서버가 켜지는 시점에 미리 호출해서, 첫 검색 요청이 CSV 로딩(파일이 크면
+    수십 초 걸릴 수 있음) 때문에 느려지지 않도록 캐시를 미리 채워둡니다.
+    이미 캐시돼 있으면(=이미 한 번 불렀으면) 아무 일도 안 하고 바로 끝나요."""
+    import time
+    t0 = time.time()
+    print("[안내] 버스 승하차 인원 데이터 미리 불러오는 중... (파일이 커서 시간이 좀 걸려요)")
+    data = _load_bus_ridership()
+    elapsed = time.time() - t0
+    if data:
+        print(f"[안내] 버스 승하차 인원 데이터 로딩 완료 ({len(data)}개 노선·정류장 조합, {elapsed:.1f}초)")
+    else:
+        print(f"[안내] 버스 승하차 인원 데이터를 찾지 못했어요 ({elapsed:.1f}초) — bus_ridership.csv 위치를 확인해주세요.")
+
+
+def _boarding_column(hour):
+    h = hour % 24
+    if h == 0:
+        return "00시승차총승객수"
+    return f"{h}시승차총승객수"
+
+
+def _congestion_label(boarding_count):
+    if boarding_count < _LOW_THRESHOLD:
+        return "여유"
+    if boarding_count < _HIGH_THRESHOLD:
+        return "보통"
+    return "혼잡"
+
+
+def get_bus_occupancy_for_route(sub_paths, hour=9, minute=0):
+    """경로의 버스 구간들에 대해, 그 시간대 평균 탑승 인원 기반 혼잡도를 반환합니다.
+    같은 (노선, 정류장)으로 등록된 행이 여러 개면 평균을 씁니다.
+    검색 시각을 모든 구간에 그대로 쓰지 않고, 그 구간 앞에 있는 도보·지하철·
+    버스 구간들의 소요시간을 누적해서 "실제로 그 구간에 도달하는 시각"을 구해
+    사용합니다 — 환승 후 한참 뒤에 타는 버스라면 검색 시각이 아니라 그 시점의
+    혼잡도를 반영해요.
+    데이터가 없는 구간은 결과 리스트에서 빠집니다(=혼잡도 모름)."""
+    data = _load_bus_ridership()
+    if not data:
+        return []
+
+    base_total_min = hour * 60 + minute
+    occupancy = []
+    elapsed = 0
+    for seg in sub_paths:
+        if seg.get("traffic_type") == 2:  # 버스 구간만
+            leg_total_min = (base_total_min + elapsed) % (24 * 60)
+            leg_hour = leg_total_min // 60
+            col = _boarding_column(leg_hour)
+
+            route_no = (seg.get("lane_name") or "").strip()
+            station = (seg.get("start_name") or "").strip()
+            rows = data.get((route_no, station))
+            if rows:
+                values = []
+                for row in rows:
+                    raw = row.get(col)
+                    if raw not in (None, ""):
+                        try:
+                            values.append(int(raw))
+                        except ValueError:
+                            pass
+                if values:
+                    avg_boarding = sum(values) / len(values)
+                    occupancy.append({
+                        "lane_name": seg.get("lane_name", ""),
+                        "start_name": seg.get("start_name", ""),
+                        "end_name": seg.get("end_name", ""),
+                        "congestion": _congestion_label(avg_boarding),
+                        "avg_boarding_count": round(avg_boarding),
+                    })
+
+        elapsed += seg.get("section_time_min", 0)
+
+    return occupancy
+
+
+def get_bus_congestion_trend_for_route(sub_paths, hour, minute):
+    """경로의 버스 구간들에 대해, "지금 시간대"와 "다음 정시"의 평균 탑승 인원을
+    비교해서 오르는지/내리는지 알려줍니다. (이 데이터는 1시간 단위라서,
+    지하철 30분 단위 트렌드와 달리 "다음 슬롯"은 항상 다음 정시입니다.)
+
+    검색 시각을 모든 구간에 그대로 쓰지 않고, 그 구간 앞에 있는 도보·지하철·
+    버스 구간들의 소요시간을 누적해서 "실제로 그 구간에 도달하는 시각"을 구해
+    사용합니다 — 환승 후 한참 뒤에 타는 버스 구간이라면, 그 시점 기준으로
+    "다음 정시"까지 남은 시간과 그때의 혼잡도를 비교해요.
+
+    각 항목은 {lane_name, start_name, end_name, current_congestion,
+    next_congestion, diff_pct, direction, minutes_until_next} 형태입니다.
+    (diff_pct는 지금 대비 다음 시간대의 상대적 증감률(%), direction은 "up"/"down")
+    비교할 데이터가 없거나 변화가 없는 구간은 결과에서 빠집니다."""
+    data = _load_bus_ridership()
+    if not data:
+        return []
+
+    base_total_min = hour * 60 + minute
+    trends = []
+    elapsed = 0
+
+    for seg in sub_paths:
+        if seg.get("traffic_type") == 2:
+            leg_total_min = base_total_min + elapsed
+            leg_hour = (leg_total_min // 60) % 24
+            leg_minute = leg_total_min % 60
+
+            cur_col = _boarding_column(leg_hour)
+            next_hour = (leg_hour + 1) % 24
+            next_col = _boarding_column(next_hour)
+            minutes_until_next = 60 - leg_minute if leg_minute != 0 else 60
+
+            route_no = (seg.get("lane_name") or "").strip()
+            station = (seg.get("start_name") or "").strip()
+            rows = data.get((route_no, station))
+            if rows:
+                cur_values, next_values = [], []
+                for row in rows:
+                    raw_cur = row.get(cur_col)
+                    raw_next = row.get(next_col)
+                    if raw_cur not in (None, ""):
+                        try:
+                            cur_values.append(int(raw_cur))
+                        except ValueError:
+                            pass
+                    if raw_next not in (None, ""):
+                        try:
+                            next_values.append(int(raw_next))
+                        except ValueError:
+                            pass
+
+                if cur_values and next_values:
+                    cur_avg = sum(cur_values) / len(cur_values)
+                    next_avg = sum(next_values) / len(next_values)
+                    if cur_avg != 0:  # 0명이면 "몇 % 변화"가 의미가 없어서 건너뜁니다.
+                        diff_pct = round((next_avg - cur_avg) / cur_avg * 100)
+                        if diff_pct != 0:
+                            trends.append({
+                                "lane_name": seg.get("lane_name", ""),
+                                "start_name": seg.get("start_name", ""),
+                                "end_name": seg.get("end_name", ""),
+                                "current_congestion": _congestion_label(cur_avg),
+                                "next_congestion": _congestion_label(next_avg),
+                                "diff_pct": diff_pct,
+                                "direction": "up" if diff_pct > 0 else "down",
+                                "minutes_until_next": minutes_until_next,
+                                # 혼잡도가 내려가는 중이면 기다렸다 이동, 올라가는 중이면 지금 이동을 추천
+                                "recommendation": (
+                                    f"{minutes_until_next}분 후에 이동하는 것을 추천합니다"
+                                    if diff_pct < 0 else "지금 이동하는 것을 추천합니다"
+                                ),
+                            })
+
+        elapsed += seg.get("section_time_min", 0)
+
+    return trends
+
+
+def get_gemini_general_recommendation(routes, occupancy_data, start, end, hour, minute, weekday):
+    """일반 모드용 추천 결과를 반환합니다.
+    ⚠️ 실제 Gemini 연동 전이라, 추천 순위는 항상 0번(첫 번째 경로)으로 고정하고,
+    혼잡도가 있으면 그중 가장 붐비는 구간을 팁으로 짧게 안내합니다."""
+    if not routes:
+        return {
+            "recommended_index": 0,
+            "rush_hour_tip": "경로 정보가 없습니다.",
+            "alternative": "",
+        }
+
+    if occupancy_data:
+        order = {"혼잡": 2, "보통": 1, "여유": 0}
+        worst = max(occupancy_data, key=lambda o: order.get(o["congestion"], 0))
+        tip = (
+            f"{worst['lane_name']}번 버스({worst['start_name']})가 이 시간대 평균 "
+            f"{worst['avg_boarding_count']}명 탑승 — 혼잡도 '{worst['congestion']}'으로 보여요."
+        )
+    else:
+        tip = "이 경로의 버스 구간에 대한 혼잡도 데이터가 없습니다."
+
+    return {
+        "recommended_index": 0,
+        "rush_hour_tip": tip,
+        "alternative": "",
+    }
