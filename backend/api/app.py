@@ -190,6 +190,19 @@ def select_accessibility_routes(routes):
     return result
 
 
+def _has_congestion_risk(route):
+    """경로 안에 실제로 만석 위험이 있는 버스 구간이 있는지 확인합니다.
+    get_bus_occupancy_for_route로 sub_paths에 bus_congestion을 미리 채워둔
+    경로에만 의미가 있고, 아직 안 채워졌으면(정보 없음) 위험 없음으로 취급합니다."""
+    for leg in route.get("sub_paths", []):
+        if leg.get("traffic_type") != 2:
+            continue
+        congestion = leg.get("bus_congestion")
+        if congestion and congestion.get("level") in ("혼잡", "매우혼잡"):
+            return True
+    return False
+
+
 def select_general_routes(routes):
     """일반 모드에서 화면 탭에 보여줄 경로 최대 6개를, 각각 다른 기준으로 고릅니다.
 
@@ -198,18 +211,25 @@ def select_general_routes(routes):
     그래서 AI 쪽과 일반 쪽의 기준을 아예 다르게 나눴습니다 — 겹치는 기준이 없어야
     "AI가 판단한 게 일반 경로랑 뭐가 다른가"가 실제로 드러납니다.
 
-    - AI 러시아워 3개 (쾌적/탑승 가능성 중심):
+    - AI 러시아워 3개 (쾌적/탑승 가능성 중심 — 만석 위험이 있는 버스 구간이 낀
+      경로는 아예 후보에서 제외합니다. 사람들이 환승을 더 하느니 차라리 확실히
+      탈 수 있는 경로를 원할 거라는 판단):
       "AI 추천 경로" — estimated_comfort_time_min(광역버스 러시아워 지연 페널티까지
         반영된 체감 소요시간) 기준. 그냥 빠른 게 아니라 실제 상황을 반영한 최적.
       "여유 경로" — 만석 위험이 큰 광역버스(has_express_bus)에 아예 의존하지 않는
         경로 중 가장 빠른 것. 시간이 더 걸려도 확실히 탈 수 있는 경로.
       "최소 환승" — transfer_count 최소.
-    - 일반 경로 3개 (스펙만 보는, 다른 지도앱과 같은 기준):
+    - 일반 경로 3개 (스펙만 보는, 다른 지도앱과 같은 기준 — 혼잡 위험 여부와
+      무관하게 순수 스펙만 봄):
       "최소 시간"(original_time_min, 쾌적함 고려 없는 순수 소요시간),
       "최소 금액"(payment_krw), "최소 도보"(walk_time_total_min).
 
     같은 경로가 여러 기준에서 동시에 1등이면 중복 없이 다음 후보로 넘어갑니다.
     후보가 부족하면 그만큼 적게 반환합니다 (억지로 6개를 채우지 않음).
+
+    호출 전에 app.py에서 bus_congestion을 이미 채워둬야 혼잡 위험 필터가
+    제대로 동작합니다 — 안 채워져 있으면 _has_congestion_risk가 항상 False라서
+    그냥 필터 없이 고르는 것과 같습니다.
     """
     if not routes:
         return []
@@ -233,17 +253,20 @@ def select_general_routes(routes):
         best["category_label"] = label
         result.append(best)
 
-    # AI 러시아워 3개 — 쾌적/탑승 가능성 중심
-    pick("AI 추천 경로", lambda r: r.get("estimated_comfort_time_min", 0), "ai_optimal")
+    no_risk = lambda r: not _has_congestion_risk(r)
+    no_risk_no_express = lambda r: no_risk(r) and not r.get("has_express_bus", False)
+
+    # AI 러시아워 3개 — 쾌적/탑승 가능성 중심. 혼잡 위험 있는 경로는 후보에서 제외.
+    pick("AI 추천 경로", lambda r: r.get("estimated_comfort_time_min", 0), "ai_optimal", filter_func=no_risk)
     pick(
         "여유 경로",
         lambda r: r.get("estimated_comfort_time_min", 0),
         "ai_comfortable",
-        filter_func=lambda r: not r.get("has_express_bus", False),
+        filter_func=no_risk_no_express,
     )
-    pick("최소 환승", lambda r: r.get("transfer_count", 0), "ai_fewest_transfer")
+    pick("최소 환승", lambda r: r.get("transfer_count", 0), "ai_fewest_transfer", filter_func=no_risk)
 
-    # 일반 경로 3개 — 스펙만 보는 기준 (쾌적함 고려 없음, 다른 지도앱과 같은 관점)
+    # 일반 경로 3개 — 스펙만 보는 기준 (쾌적함/혼잡위험 고려 없음, 다른 지도앱과 같은 관점)
     pick("최소 시간", lambda r: r.get("original_time_min", 0), "general_fastest")
     pick("최소 금액", lambda r: r.get("payment_krw", 0), "general_cheapest")
     pick("최소 도보", lambda r: r.get("walk_time_total_min", 0), "general_least_walk")
@@ -536,6 +559,8 @@ def get_optimal_route():
         return jsonify(final_result)
 
     routes = final_result.get("routes", [])
+    rush_hour = is_rush_hour(hour, minute, weekday)
+    rush_hour_result = None
 
     # 교통약자 모드일 땐 후보 전체가 아니라, 부담 최소 3개 + 최소금액/최적 2개로
     # 화면에 보여줄 경로를 5개로 좁혀서 확정합니다.
@@ -545,11 +570,23 @@ def get_optimal_route():
     # 일반 모드도 마찬가지로, 그냥 시간순 상위 N개가 아니라 "AI 추천/최소시간/최소환승"
     # + "최소금액/최소도보/최소환승" 각각 다른 기준의 대표 경로 최대 6개로 좁힙니다.
     elif mode == 'general' and routes:
-        routes = select_general_routes(routes)
+        if rush_hour and GENERAL_ROUTE_AVAILABLE:
+            # select_general_routes가 "혼잡 위험 있는 경로는 AI 추천에서 제외"하려면
+            # 고르기 전에 여석 정보가 이미 채워져 있어야 함 — 그래서 여기서 (예전엔
+            # 최종 선택된 6개에 대해서만 하던 걸) 더 넓은 후보 풀에 대해 먼저 계산함.
+            # 후보 전체(최대 20개 안팎)를 다 하면 느려지니, comfort_time 기준으로
+            # 이미 정렬돼 있는 상위 10개 정도로 범위를 좁힘 — 같은 정류소/버스
+            # 조합은 bus_congestion_cache로 재사용해서 GBIS 중복 호출도 줄임.
+            bus_congestion_cache = {}
+            candidate_pool = routes[:10]
+            for r in candidate_pool:
+                r["sub_paths"] = get_bus_occupancy_for_route(
+                    r.get("sub_paths", []), cache=bus_congestion_cache
+                )
+            routes = select_general_routes(candidate_pool)
+        else:
+            routes = select_general_routes(routes)
         final_result["routes"] = routes
-
-    rush_hour = is_rush_hour(hour, minute, weekday)
-    rush_hour_result = None
 
     # 교통약자 모드(mode != 'general')일 때만 엘리베이터 인접 하차칸 정보를 조회합니다.
     # (러시아워 여부와 상관없이 항상 계산 — 엘리베이터 위치는 혼잡도와 무관한 정보라서요)
@@ -572,16 +609,9 @@ def get_optimal_route():
     if rush_hour and routes:
         if mode == 'general':
             if GENERAL_ROUTE_AVAILABLE:
-                # 화면 탭에 보이는 후보 경로(AI 러시아워 3개 + 일반 경로 3개 = 최대 6개,
-                # 프론트 RouteResultScreen의 list.slice(0, 6)과 맞춤)에 여석 정보를 채워줍니다.
-                # (예전엔 routes[0]에만 채워서 다른 경로 탭을 선택하면 여석 뱃지가 안 보였음)
-                # 같은 정류소/버스 조합은 bus_congestion_cache로 재사용해 GBIS 중복 호출을
-                # 줄임 — 안 그러면 경로 수 × 버스 구간 수만큼 순차 호출이 쌓여 타임아웃 남.
-                bus_congestion_cache = {}
-                for r in routes[:6]:
-                    r["sub_paths"] = get_bus_occupancy_for_route(
-                        r.get("sub_paths", []), cache=bus_congestion_cache
-                    )
+                # 여석 정보는 위(select_general_routes 호출 전)에서 후보 풀 단계에서
+                # 이미 다 채워놨음 — 최종 선택된 routes는 그 후보 풀의 부분집합이라
+                # sub_paths.bus_congestion이 그대로 들어있음.
                 # get_gemini_general_recommendation은 occupancy_data가
                 # [{routeName, station, label}, ...] 형태이길 기대함 — 위에서
                 # sub_paths에 채운 bus_congestion 필드로부터 그 형태를 다시 만들어줌

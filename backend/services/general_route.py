@@ -35,7 +35,15 @@ def classify_bus_crowding(bus: dict) -> dict:
                 level, label = "혼잡", f"빈자리 {remain_seat}석이지만 {location_no}정거장 전이라 도착 전 만석 가능"
         else:
             level, label = "혼잡", f"빈자리 {remain_seat}석"
-        return {"level": level, "label": label, "source": "remainSeat"}
+
+        result = {"level": level, "label": label, "source": "remainSeat"}
+        # 혼잡 판정인데 아직 몇 정거장 전이면(=지금 정류소에 도착하기 전에 만석 될
+        # 위험) 그냥 "혼잡"이라고만 알려주는 것보다 몇 정거장 전에서 미리 타라고
+        # 알려주는 게 더 실질적인 대안임 — 호출하는 쪽(get_bus_occupancy_for_route)
+        # 에서 이 플래그를 보고 실제 정류소 이름을 채워줌.
+        if level == "혼잡" and location_no > 2:
+            result["needs_earlier_boarding"] = True
+        return result
 
     if crowded is not None:
         mapping = {1: "여유", 2: "보통", 3: "혼잡", 4: "매우혼잡"}
@@ -45,7 +53,38 @@ def classify_bus_crowding(bus: dict) -> dict:
     return {"level": "판단불가", "label": "혼잡도 정보 없음", "source": None}
 
 
-from api.gbis_service import get_bus_arrival, get_station_id_by_name
+from api.gbis_service import (
+    get_bus_arrival,
+    get_station_id_by_name,
+    get_route_id_by_name,
+    get_route_stations,
+)
+
+EARLIER_BOARDING_STOPS_BACK = 2  # "전전 정거장" = 2정거장 전
+
+
+def _find_earlier_boarding_stop(route_name, station_id, stops_back=EARLIER_BOARDING_STOPS_BACK):
+    """혼잡 위험이 있는 버스 구간에 대해, stops_back 정거장 전 정류소 이름을 찾음.
+    노선의 전체 경유 정류소 목록에서 지금 타려는 정류소 위치를 찾아 그만큼 앞으로
+    간 정류소를 돌려줌. 노선/정류소를 못 찾거나 이미 첫 정류소 근처면 None."""
+    try:
+        route_info = get_route_id_by_name(route_name)
+        if not route_info or not route_info.get("routeId"):
+            return None
+        stations = get_route_stations(route_info["routeId"])
+        if not stations:
+            return None
+        idx = next(
+            (i for i, s in enumerate(stations) if str(s.get("stationId")) == str(station_id)),
+            None,
+        )
+        if idx is None or idx - stops_back < 0:
+            return None
+        return stations[idx - stops_back].get("stationName")
+    except Exception as e:
+        print(f"[GBIS] 미리 타기 정류소 조회 실패: {e}", flush=True)
+        return None
+
 
 try:
     import anthropic
@@ -170,7 +209,13 @@ def get_bus_occupancy_for_route(sub_paths, cache=None):
             None
         )
         if matched_bus:
-            leg["bus_congestion"] = cache[cache_key] = classify_bus_crowding(matched_bus)
+            crowding = classify_bus_crowding(matched_bus)
+            if crowding.pop("needs_earlier_boarding", False):
+                earlier_stop = _find_earlier_boarding_stop(route_name, station_id)
+                if earlier_stop:
+                    crowding["earlier_boarding_stop"] = earlier_stop
+                    crowding["label"] = f"{crowding['label']} — {earlier_stop}에서 미리 타면 좋아요"
+            leg["bus_congestion"] = cache[cache_key] = crowding
         else:
             leg["bus_congestion"] = cache[cache_key] = {"level": "판단불가", "label": "도착 예정 정보 없음"}
 
