@@ -847,6 +847,7 @@ function RouteResultScreen() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [selectedIdx, setSelectedIdx] = useState(0);
+  const [showAiReason, setShowAiReason] = useState(false);
 
    useEffect(() => {
     if (!departure || !arrival) return;
@@ -1006,7 +1007,10 @@ function RouteResultScreen() {
               return (
                 <button
                   key={idx}
-                  onClick={() => setSelectedIdx(idx)}
+                  onClick={() => {
+                    setSelectedIdx(idx);
+                    setShowAiReason(false);
+                  }}
                   className={`flex-shrink-0 px-4 py-3 rounded-xl border-2 transition-all ${
                     isSelected
                       ? isHighlighted ? "bg-orange-300 text-orange-900 border-orange-300" : "bg-blue-600 text-white border-blue-600"
@@ -1037,9 +1041,20 @@ function RouteResultScreen() {
               </div>
 
               {isAccessibilityMode && currentRoute?.ai_reason && (
-                <p className="text-xs text-orange-700 bg-orange-50 border border-orange-100 rounded-lg px-3 py-2 mb-4">
-                  💡 {currentRoute.ai_reason}
-                </p>
+                <div className="mb-4">
+                  <button
+                    onClick={() => setShowAiReason(prev => !prev)}
+                    aria-label="AI 추천 이유 보기"
+                    className="w-8 h-8 flex items-center justify-center text-base bg-orange-50 border border-orange-200 rounded-full hover:bg-orange-100 transition-colors"
+                  >
+                    💡
+                  </button>
+                  {showAiReason && (
+                    <p className="text-xs text-orange-700 bg-orange-50 border border-orange-100 rounded-lg px-3 py-2 mt-2">
+                      {currentRoute.ai_reason}
+                    </p>
+                  )}
+                </div>
               )}
 
               <div className={`grid ${getTimeDiff(currentRoute) ? "grid-cols-3" : "grid-cols-2"} gap-4 text-center mb-4`}>
