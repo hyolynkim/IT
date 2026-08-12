@@ -5,6 +5,7 @@
 # 버스를 후보에서 거르는 데(route_has_non_operating_bus) 쓰입니다.
 import os
 import csv
+import array
 
 BUS_RIDERSHIP_CSV_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "bus_ridership.csv")
 _bus_ridership_cache = None
@@ -14,22 +15,71 @@ _bus_ridership_cache = None
 _LOW_THRESHOLD = 150
 _HIGH_THRESHOLD = 500
 
+# CSV에서 실제로 쓰는 시간대별 컬럼명 목록(0~23시). "1시승차총승객수"처럼
+# 0시만 "00시"로 앞자리 0이 붙고 나머지는 안 붙는 원본 CSV 표기를 그대로 따름.
+_HOUR_COLUMN_NAMES = [
+    (
+        "00시승차총승객수" if h == 0 else f"{h}시승차총승객수",
+        "00시하차총승객수" if h == 0 else f"{h}시하차총승객수",
+    )
+    for h in range(24)
+]
+
+_NO_DATA = -1  # array.array에는 None을 못 넣어서, "데이터 없음"을 -1로 표시 (승하차 인원은 항상 0 이상)
+
 
 def _load_bus_ridership():
+    """bus_ridership.csv(약 4만 3천 행 × 57열)를 그대로 dict 리스트로 들고
+    있으면 Render 무료 인스턴스(메모리 512MB)에서 OOM으로 죽을 만큼 메모리를
+    많이 먹어서(행마다 57개 한글 컬럼명 dict을 통째로 유지), 실제로 쓰는
+    노선번호/역명(키)과 시간대별 승하차 인원 48개 값만 뽑아 array.array로
+    압축해서 저장합니다. 원본 행의 나머지 컬럼(정류장ID/ARS번호/요일/집계일자
+    등)은 어차피 아무 데서도 안 읽어서 버립니다."""
     global _bus_ridership_cache
     if _bus_ridership_cache is not None:
         return _bus_ridership_cache
+
+    def _parse_with(encoding):
+        """이 인코딩으로 파일 전체를 파싱합니다. 중간에 디코딩 에러가 나면
+        (헤더는 맞는 인코딩으로 읽혔지만 본문 어딘가가 깨진 경우도 포함해서)
+        예외를 그대로 던져서 호출한 쪽이 다음 인코딩으로 재시도하게 합니다."""
+        parsed = {}
+        with open(BUS_RIDERSHIP_CSV_PATH, encoding=encoding) as f:
+            for row in csv.DictReader(f):
+                route_no = (row.get("노선번호") or "").strip()
+                raw_station = (row.get("역명") or "").strip()
+                # "종로2가사거리(00089)"처럼 뒤에 ARS번호가 괄호로 붙어있어서 떼어냅니다.
+                station = raw_station.split("(")[0].strip()
+                key = (route_no, station)
+
+                board = array.array("i", [_NO_DATA]) * 24
+                alight = array.array("i", [_NO_DATA]) * 24
+                for h, (board_col, alight_col) in enumerate(_HOUR_COLUMN_NAMES):
+                    raw_board = row.get(board_col)
+                    raw_alight = row.get(alight_col)
+                    if raw_board not in (None, ""):
+                        try:
+                            board[h] = int(raw_board)
+                        except ValueError:
+                            pass
+                    if raw_alight not in (None, ""):
+                        try:
+                            alight[h] = int(raw_alight)
+                        except ValueError:
+                            pass
+
+                parsed.setdefault(key, []).append({"board": board, "alight": alight})
+        return parsed
 
     data = {}
     if os.path.exists(BUS_RIDERSHIP_CSV_PATH):
         # 서울시 CSV는 내려받는 방식에 따라 CP949(EUC-KR 계열) 또는 UTF-8(-SIG)로
         # 올 수 있어서, 둘 다 순서대로 시도합니다.
-        rows = None
         last_error = None
         for encoding in ("utf-8-sig", "cp949"):
             try:
-                with open(BUS_RIDERSHIP_CSV_PATH, encoding=encoding) as f:
-                    rows = list(csv.DictReader(f))
+                data = _parse_with(encoding)
+                last_error = None
                 break
             except (UnicodeDecodeError, UnicodeError) as e:
                 last_error = e
@@ -38,19 +88,19 @@ def _load_bus_ridership():
                 last_error = e
                 break
 
-        if rows is None:
+        if last_error is not None:
             print(f"[안내] 버스 승하차 인원 CSV 로딩 실패: {last_error}")
-        else:
-            for row in rows:
-                route_no = (row.get("노선번호") or "").strip()
-                raw_station = (row.get("역명") or "").strip()
-                # "종로2가사거리(00089)"처럼 뒤에 ARS번호가 괄호로 붙어있어서 떼어냅니다.
-                station = raw_station.split("(")[0].strip()
-                key = (route_no, station)
-                data.setdefault(key, []).append(row)
+            data = {}
 
     _bus_ridership_cache = data
     return data
+
+
+def _hourly_value(record, field, hour):
+    """record["board"]/["alight"] 배열에서 hour(0~23) 값을 꺼냅니다.
+    데이터가 없던 자리(_NO_DATA)면 None을 반환 — 기존 raw_board is None 체크와 동일한 의미."""
+    value = record[field][hour % 24]
+    return None if value == _NO_DATA else value
 
 
 def preload_bus_ridership():
@@ -66,20 +116,6 @@ def preload_bus_ridership():
         print(f"[안내] 버스 승하차 인원 데이터 로딩 완료 ({len(data)}개 노선·정류장 조합, {elapsed:.1f}초)")
     else:
         print(f"[안내] 버스 승하차 인원 데이터를 찾지 못했어요 ({elapsed:.1f}초) — bus_ridership.csv 위치를 확인해주세요.")
-
-
-def _boarding_column(hour):
-    h = hour % 24
-    if h == 0:
-        return "00시승차총승객수"
-    return f"{h}시승차총승객수"
-
-
-def _alighting_column(hour):
-    h = hour % 24
-    if h == 0:
-        return "00시하차총승객수"
-    return f"{h}시하차총승객수"
 
 
 def _congestion_label(boarding_count):
@@ -113,19 +149,11 @@ def is_bus_operating_at(route_no, station, hour):
     if not rows:
         return True
 
-    board_col = _boarding_column(hour)
-    alight_col = _alighting_column(hour)
-
     found_valid_data = False
-    for row in rows:
-        raw_board = row.get(board_col)
-        raw_alight = row.get(alight_col)
-        if raw_board in (None, "") or raw_alight in (None, ""):
-            continue
-        try:
-            board = int(raw_board)
-            alight = int(raw_alight)
-        except ValueError:
+    for record in rows:
+        board = _hourly_value(record, "board", hour)
+        alight = _hourly_value(record, "alight", hour)
+        if board is None or alight is None:
             continue
         found_valid_data = True
         if board > 0 or alight > 0:
@@ -178,20 +206,15 @@ def get_bus_occupancy_for_route(sub_paths, hour=9, minute=0):
         if seg.get("traffic_type") == 2:  # 버스 구간만
             leg_total_min = (base_total_min + elapsed) % (24 * 60)
             leg_hour = leg_total_min // 60
-            col = _boarding_column(leg_hour)
 
             route_no = (seg.get("lane_name") or "").strip()
             station = (seg.get("start_name") or "").strip()
             rows = data.get((route_no, station))
             if rows:
-                values = []
-                for row in rows:
-                    raw = row.get(col)
-                    if raw not in (None, ""):
-                        try:
-                            values.append(int(raw))
-                        except ValueError:
-                            pass
+                values = [
+                    v for v in (_hourly_value(r, "board", leg_hour) for r in rows)
+                    if v is not None
+                ]
                 if values:
                     avg_boarding = sum(values) / len(values)
                     if avg_boarding > 0:  # 0명이면 그 시간대엔 사실상 데이터가 없는 것 — 안내 안 함
@@ -236,29 +259,15 @@ def get_bus_congestion_trend_for_route(sub_paths, hour, minute):
             leg_hour = (leg_total_min // 60) % 24
             leg_minute = leg_total_min % 60
 
-            cur_col = _boarding_column(leg_hour)
             next_hour = (leg_hour + 1) % 24
-            next_col = _boarding_column(next_hour)
             minutes_until_next = 60 - leg_minute if leg_minute != 0 else 60
 
             route_no = (seg.get("lane_name") or "").strip()
             station = (seg.get("start_name") or "").strip()
             rows = data.get((route_no, station))
             if rows:
-                cur_values, next_values = [], []
-                for row in rows:
-                    raw_cur = row.get(cur_col)
-                    raw_next = row.get(next_col)
-                    if raw_cur not in (None, ""):
-                        try:
-                            cur_values.append(int(raw_cur))
-                        except ValueError:
-                            pass
-                    if raw_next not in (None, ""):
-                        try:
-                            next_values.append(int(raw_next))
-                        except ValueError:
-                            pass
+                cur_values = [v for v in (_hourly_value(r, "board", leg_hour) for r in rows) if v is not None]
+                next_values = [v for v in (_hourly_value(r, "board", next_hour) for r in rows) if v is not None]
 
                 if cur_values and next_values:
                     cur_avg = sum(cur_values) / len(cur_values)

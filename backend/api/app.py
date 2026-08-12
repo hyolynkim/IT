@@ -21,7 +21,20 @@ sys.path.append(API_DIR)
 from tago_service import get_route_congestion
 from bus_congestion import CongestionEstimator
 
-est = CongestionEstimator()
+# CongestionEstimator()는 backend/data/bus_congestion_avg_wide.csv(약 14MB)를
+# pandas로 통째로 읽어들여서(약 50~60MB 메모리) 시간이 좀 걸림. /api/congestion/route
+# (버스 번호 검색) 기능을 쓸 때만 필요한데, 모듈 import 시점에 바로 만들면 그
+# 기능을 한 번도 안 쓰는 요청(경로 검색 등)에서도 항상 메모리를 차지하고 있게
+# 됨 — Render 무료 인스턴스(메모리 512MB)에서 OOM으로 서비스가 죽는 원인 중
+# 하나였음. 그래서 실제로 처음 쓰일 때만 만들도록 지연 초기화함.
+_congestion_estimator = None
+
+
+def _get_congestion_estimator():
+    global _congestion_estimator
+    if _congestion_estimator is None:
+        _congestion_estimator = CongestionEstimator()
+    return _congestion_estimator
 
 from models.route_finder import find_cat_optimal_route
 
@@ -908,7 +921,7 @@ def bus_congestion_route():
         from datetime import datetime
         hour = datetime.now().hour
 
-    stops = est.get_route_stops(route_nm, hour=hour)
+    stops = _get_congestion_estimator().get_route_stops(route_nm, hour=hour)
 
     if not stops:
         return jsonify({"error": f"'{route_nm}'번 노선을 찾을 수 없습니다.", "routes": []}), 404
