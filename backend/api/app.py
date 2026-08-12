@@ -7,6 +7,7 @@ import requests, time
 import json
 import csv
 from dataclasses import asdict
+from concurrent.futures import ThreadPoolExecutor
 
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.append(BASE_DIR)
@@ -503,10 +504,16 @@ def select_accessibility_routes(routes, accessibility_type=None, weekday=0, hour
     # 공공데이터 API를 너무 많이 호출하게 돼서, 상위 후보로 범위를 좁혔어요).
     # "엘리베이터 필수" 필터에서 이미 조회해둔 캐시가 있으면 재사용해서 API를
     # 중복 호출하지 않습니다.
+    # 공공데이터 API 호출이 건당 몇 초씩 걸려서, 최대 8개를 순서대로 부르면
+    # gunicorn 타임아웃(60초)을 넘길 수 있었음 — I/O 대기 구간이라 GIL이
+    # 풀리는 걸 이용해 스레드로 동시에 호출해서 전체 소요시간을 줄입니다.
     shortlist = burden_sorted[:8]
-    for r in shortlist:
-        if "_elevator_info_cache" not in r:
-            r["_elevator_info_cache"] = get_elevator_tip_for_route(r)
+    to_fetch = [r for r in shortlist if "_elevator_info_cache" not in r]
+    if to_fetch:
+        with ThreadPoolExecutor(max_workers=len(to_fetch)) as executor:
+            results = executor.map(get_elevator_tip_for_route, to_fetch)
+            for r, info in zip(to_fetch, results):
+                r["_elevator_info_cache"] = info
 
     congestion_checked = False
     if accessibility_type == "pregnant":
@@ -1006,10 +1013,14 @@ def get_optimal_route():
     # 최종 응답 단계에서 API를 다시 호출하지 않고 그대로 재사용합니다.
     if mode != 'general' and require_elevator and routes:
         candidate_pool = routes[:15]
+        # 공공데이터 API 호출이 건당 몇 초씩 걸려서, 15개를 순서대로 부르면
+        # gunicorn 타임아웃(60초)을 넘길 수 있었음 — 스레드로 동시에 호출.
+        with ThreadPoolExecutor(max_workers=len(candidate_pool)) as executor:
+            infos = list(executor.map(get_elevator_tip_for_route, candidate_pool))
         with_elevator = []
-        for r in candidate_pool:
-            r["_elevator_info_cache"] = get_elevator_tip_for_route(r)
-            if r["_elevator_info_cache"] and r["_elevator_info_cache"].get("directions"):
+        for r, info in zip(candidate_pool, infos):
+            r["_elevator_info_cache"] = info
+            if info and info.get("directions"):
                 with_elevator.append(r)
         routes = with_elevator
         final_result["routes"] = routes

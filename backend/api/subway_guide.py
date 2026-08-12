@@ -108,6 +108,14 @@ class QuickGetOffInfo:
         return "\n".join(lines)
 
 
+# (line, station) -> QuickGetOffInfo 캐시. 공공데이터 API 호출이 건당 몇 초씩
+# 걸려서(페이지네이션 + 재시도 포함), 교통약자 모드에서 경로 하나당 여러 역을
+# 순서대로 조회하면 gunicorn 타임아웃(60초)을 넘기는 문제가 있었음 — 역의
+# 엘리베이터 설치 정보는 자주 바뀌는 게 아니라서, 프로세스가 살아있는 동안은
+# 같은 (노선, 역) 조합을 다시 조회하지 않고 캐시를 재사용합니다.
+_elevator_info_cache: dict[tuple[str, str], Optional["QuickGetOffInfo"]] = {}
+
+
 def fetch_quick_get_off_info(
     line: str,
     station: str,
@@ -121,6 +129,9 @@ def fetch_quick_get_off_info(
     "성신여대입구(돈암)역"처럼 괄호 부기명이 있는 역은, "성신여대입구역"으로
     검색하면 포함(contains) 검색에 걸리지 않을 수 있어 자동으로
     이름을 조금씩 줄여가며 재시도합니다.
+
+    같은 (line, station) 조합은 프로세스 내에서 한 번만 실제로 API를
+    호출하고, 이후엔 캐시된 결과를 그대로 재사용합니다.
     """
     if not service_key:
         print("[안내] 서비스키가 아직 설정되지 않았어요. "
@@ -128,15 +139,26 @@ def fetch_quick_get_off_info(
               file=sys.stderr)
         return None
 
+    cache_key = (line, station)
+    if cache_key in _elevator_info_cache:
+        return _elevator_info_cache[cache_key]
+
+    result: Optional[QuickGetOffInfo] = None
     for candidate in _station_search_candidates(station):
         items = _fetch_all_elevator_items(line, candidate, service_key)
         if items is None:
-            return None  # 오류 메시지는 이미 출력됨
+            result = None  # 오류 메시지는 이미 출력됨 — 실패는 캐시하지 않음(다음 요청에서 재시도)
+            return result
         if items:
-            return _parse_elevator_items(items, line, station)
+            result = _parse_elevator_items(items, line, station)
+            break
 
-    # 모든 후보로도 결과가 없으면 '역을 찾을 수 없음'으로 처리
-    return QuickGetOffInfo(line=line, station=station, directions=[], station_found=False)
+    if result is None:
+        # 모든 후보로도 결과가 없으면 '역을 찾을 수 없음'으로 처리
+        result = QuickGetOffInfo(line=line, station=station, directions=[], station_found=False)
+
+    _elevator_info_cache[cache_key] = result
+    return result
 
 
 def _station_search_candidates(station: str) -> list[str]:
