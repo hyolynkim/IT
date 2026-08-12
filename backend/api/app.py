@@ -963,7 +963,11 @@ def get_optimal_route():
     walk_speed = request.args.get('walk_speed', default='normal', type=str)  # normal / slow / wheelchair
     require_elevator = request.args.get('require_elevator', default='0', type=str) in ('1', 'true', 'True')
 
-    final_result = find_cat_optimal_route(start, end, hour, mode=mode)
+    # find_cat_optimal_route가 광역버스 지연 페널티(+30분)를 매길지 판단하려면
+    # 실제 러시아워 여부가 필요해서, 이 호출 전에 먼저 계산해서 넘겨줍니다.
+    rush_hour = is_rush_hour(hour, minute, weekday)
+
+    final_result = find_cat_optimal_route(start, end, hour, mode=mode, is_rush_hour=rush_hour)
 
     if final_result.get("status") == "fail":
         return jsonify(final_result)
@@ -980,7 +984,6 @@ def get_optimal_route():
         ]
         final_result["routes"] = routes
 
-    rush_hour = is_rush_hour(hour, minute, weekday)
     rush_hour_result = None
 
     # 교통약자 모드에서 "엘리베이터 필수"를 켰으면, 실제로 하차역에 엘리베이터

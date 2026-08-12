@@ -160,13 +160,18 @@ def get_odsay_route(sx, sy, ex, ey):
     except:
         return None
 
-def find_cat_optimal_route(start_name, end_name, departure_hour, mode="general"):  # ⬅️ mode 파라미터 추가
+def find_cat_optimal_route(start_name, end_name, departure_hour, mode="general", is_rush_hour=False):  # ⬅️ mode 파라미터 추가
     """최적 경로 반환 메인 로직
 
     mode:
       - "general" (기본값): 광역버스 포함 경로 우선, 그다음 소요시간 순
       - "accessibility": 노약자/임산부용 — 환승 횟수 · 도보 시간이 적은(=몸에
         부담이 적은) 경로를 우선으로 재정렬 (같은 후보 경로 목록 안에서 순서만 다르게)
+
+    is_rush_hour: 호출하는 쪽(app.py)의 is_rush_hour()로 판단한 "진짜" 러시아워
+      여부. 광역버스가 낀 경로의 체감시간(+30분 지연 페널티)은 이 값이 True일
+      때만 매깁니다 — 러시아워가 아니면 원래 소요시간(original_time_min)이
+      그대로 estimated_comfort_time_min으로 쓰입니다.
     """
     sx, sy = get_coords_from_keyword(start_name)
     ex, ey = get_coords_from_keyword(end_name)
@@ -201,8 +206,13 @@ def find_cat_optimal_route(start_name, end_name, departure_hour, mode="general")
         transit_leg_count = sum(1 for seg in detailed_segments if seg.get("traffic_type") in (1, 2))
         transfer_count = max(transit_leg_count - 1, 0)
 
+        # 광역버스 러시아워 지연 페널티 — 실제 러시아워 시간대(app.py의 is_rush_hour
+        # 기준)일 때만 매깁니다. 예전엔 여기서 자체적으로 8~10시/18~20시라는
+        # 별도 시간대를 하드코딩해서 판단했는데, 실제 러시아워 정의(평일
+        # 05:30~07:30·16:30~19:30, 금~일 21~23시)랑 안 맞아서 러시아워가
+        # 아닌데도(예: 9시) 예상시간에 +30분이 붙는 문제가 있었음.
         total_penalty = 0
-        if has_express_bus and (8 <= departure_hour <= 10 or 18 <= departure_hour <= 20):
+        if has_express_bus and is_rush_hour:
             total_penalty += 30
 
         comfort_time = base_time + total_penalty
