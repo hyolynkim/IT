@@ -58,6 +58,32 @@ function CongestionBadge({ level, label }: { level: string; label?: string }) {
 }
 // ────────────────────────────────────────────────────────────────
 
+// ── 교통약자(노약자/임산부) 아이콘 (elderly 브랜치 원본 SVG) ─────────────
+function ElderlyIcon({ className }: { className?: string }) {
+  return (
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" fill="none" className={className}>
+      <circle cx="37" cy="12" r="8" fill="currentColor" />
+      <path d="M34 28 L21 42 L21 60" stroke="currentColor" strokeWidth="11" strokeLinecap="round" strokeLinejoin="round" fill="none" />
+      <path d="M35 30 L47 33" stroke="currentColor" strokeWidth="6" strokeLinecap="round" fill="none" />
+      <path d="M49 40 L55 60" stroke="currentColor" strokeWidth="5" strokeLinecap="round" fill="none" />
+      <circle cx="47" cy="33" r="3" fill="currentColor" />
+    </svg>
+  );
+}
+
+function PregnantIcon({ className }: { className?: string }) {
+  return (
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" fill="none" className={className}>
+      <circle cx="29" cy="12" r="8" fill="currentColor" />
+      <path
+        d="M25 24 C22 24 21 27 21 30 L21 54 C21 58 24 60 27 60 C30 60 32 58 32 54 L32 50 C41 50 45 43 42 36 C39 28 31 22 25 24 Z"
+        fill="currentColor"
+      />
+    </svg>
+  );
+}
+// ────────────────────────────────────────────────────────────────
+
 // ── 검색 기록 관리 ──────────────────────────────────────────────
 const HISTORY_KEY = "searchHistory";
 const MAX_HISTORY = 10;
@@ -306,6 +332,8 @@ function SearchModal({ onClose }: { onClose: () => void }) {
   const [isLocating, setIsLocating] = useState(false);
   const [isElderlySelected, setIsElderlySelected] = useState(false);
   const [isPregnantSelected, setIsPregnantSelected] = useState(false);
+  const [walkSpeed, setWalkSpeed] = useState<"normal" | "slow" | "wheelchair">("normal");
+  const [requireElevator, setRequireElevator] = useState(false);
 
   // 하나라도 선택되면 교통약자 모드로 판단
   const isAccessibilityMode = isElderlySelected || isPregnantSelected;
@@ -344,13 +372,15 @@ function SearchModal({ onClose }: { onClose: () => void }) {
           departure,
           arrival,
           isAccessibilityMode,
-          accessibilityType: isElderlySelected && isPregnantSelected
-            ? "both"
-            : isElderlySelected
+          // 노약자/임산부는 동시 선택이 안 되도록(아래 버튼에서 상호 배타 처리)
+          // 막아뒀으므로 "both"는 나올 일이 없음 — elderly ? "elderly" : pregnant ? "pregnant" : null만 있으면 충분.
+          accessibilityType: isElderlySelected
             ? "elderly"
             : isPregnantSelected
             ? "pregnant"
             : null,
+          walkSpeed: isAccessibilityMode ? walkSpeed : "normal",
+          requireElevator: isAccessibilityMode ? requireElevator : false,
         },
       });
     }
@@ -395,25 +425,26 @@ function SearchModal({ onClose }: { onClose: () => void }) {
           />
         </div>
 
-        {/* 교통약자 아이콘 선택 */}
+        {/* 교통약자 아이콘 선택 — 노약자/임산부는 동시에 고를 수 없음(한쪽 고르면 다른 쪽 자동 해제) */}
         <div>
           <p className="text-sm font-semibold text-gray-700 mb-2">교통약자를 위한 경로가 필요하신가요?</p>
           <div className="flex gap-3">
             <button
-              onClick={() => setIsElderlySelected(prev => !prev)}
+              onClick={() => {
+                setIsElderlySelected(prev => !prev);
+                setIsPregnantSelected(false);
+              }}
               className={`flex-1 flex flex-col items-center gap-1.5 py-3 rounded-xl border-2 transition-colors ${
                 isElderlySelected
                   ? "border-yellow-400 bg-yellow-50"
                   : "border-gray-200 bg-gray-50 hover:border-gray-300"
               }`}
             >
-              <span
-                className={`text-3xl transition-all ${
-                  isElderlySelected ? "" : "grayscale opacity-50"
+              <ElderlyIcon
+                className={`w-8 h-8 transition-all ${
+                  isElderlySelected ? "text-yellow-600" : "text-gray-400 grayscale opacity-50"
                 }`}
-              >
-                👴
-              </span>
+              />
               <span
                 className={`text-xs font-semibold ${
                   isElderlySelected ? "text-yellow-700" : "text-gray-500"
@@ -424,20 +455,21 @@ function SearchModal({ onClose }: { onClose: () => void }) {
             </button>
 
             <button
-              onClick={() => setIsPregnantSelected(prev => !prev)}
+              onClick={() => {
+                setIsPregnantSelected(prev => !prev);
+                setIsElderlySelected(false);
+              }}
               className={`flex-1 flex flex-col items-center gap-1.5 py-3 rounded-xl border-2 transition-colors ${
                 isPregnantSelected
                   ? "border-pink-400 bg-pink-50"
                   : "border-gray-200 bg-gray-50 hover:border-gray-300"
               }`}
             >
-              <span
-                className={`text-3xl transition-all ${
-                  isPregnantSelected ? "" : "grayscale opacity-50"
+              <PregnantIcon
+                className={`w-8 h-8 transition-all ${
+                  isPregnantSelected ? "text-pink-600" : "text-gray-400 grayscale opacity-50"
                 }`}
-              >
-                🤰
-              </span>
+              />
               <span
                 className={`text-xs font-semibold ${
                   isPregnantSelected ? "text-pink-700" : "text-gray-500"
@@ -448,6 +480,46 @@ function SearchModal({ onClose }: { onClose: () => void }) {
             </button>
           </div>
         </div>
+
+        {isAccessibilityMode && (
+          <div className="space-y-3 bg-gray-50 rounded-xl p-3">
+            <div>
+              <p className="text-xs font-semibold text-gray-700 mb-2">걸음 속도</p>
+              <div className="flex gap-2">
+                {([
+                  { value: "normal", label: "보통" },
+                  { value: "slow", label: "느림" },
+                  { value: "wheelchair", label: "휠체어" },
+                ] as const).map((opt) => (
+                  <button
+                    key={opt.value}
+                    onClick={() => setWalkSpeed(opt.value)}
+                    className={`flex-1 py-2 rounded-lg text-xs font-semibold border-2 transition-colors ${
+                      walkSpeed === opt.value
+                        ? "border-blue-400 bg-blue-50 text-blue-700"
+                        : "border-gray-200 bg-white text-gray-500 hover:border-gray-300"
+                    }`}
+                  >
+                    {opt.label}
+                  </button>
+                ))}
+              </div>
+              <p className="text-[11px] text-gray-400 mt-1">
+                실제 걸음 속도에 맞춰 도보 구간 예상 시간을 조정해요.
+              </p>
+            </div>
+
+            <label className="flex items-center gap-2 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={requireElevator}
+                onChange={(e) => setRequireElevator(e.target.checked)}
+                className="w-4 h-4 accent-blue-600"
+              />
+              <span className="text-xs font-semibold text-gray-700">엘리베이터 확인된 역만 보여주기</span>
+            </label>
+          </div>
+        )}
 
         <button
           onClick={handleSearch}
@@ -1240,6 +1312,8 @@ type RouteFetchParams = {
   currentMinute: number;
   currentWeekday: number;
   accessibilityType?: string | null;
+  walkSpeed?: "normal" | "slow" | "wheelchair";
+  requireElevator?: boolean;
 };
 
 // ══════════════════════════════════════════════════════════════
@@ -1248,14 +1322,18 @@ type RouteFetchParams = {
 // 이 함수 안의 fetch URL과 파라미터를 여기서 수정하세요.
 // ══════════════════════════════════════════
 function fetchAccessibilityRoutes({
-  departure, arrival, currentHour, currentMinute, currentWeekday, accessibilityType,
+  departure, arrival, currentHour, currentMinute, currentWeekday, accessibilityType, walkSpeed, requireElevator,
 }: RouteFetchParams) {
-  // accessibilityType(elderly/pregnant/both)에 따라 백엔드의 select_accessibility_routes가
+  // accessibilityType(elderly/pregnant)에 따라 백엔드의 select_accessibility_routes가
   // 도보 최소화(노약자) / 혼잡도 최소화(임산부) 등 다른 기준으로 경로를 고름 — 반드시 같이 보내야 함
   // (예전엔 이 값을 안 보내서 노약자를 선택해도 항상 기본(환승·도보) 기준으로만 골랐었음).
   const typeParam = accessibilityType ? `&accessibility_type=${encodeURIComponent(accessibilityType)}` : "";
+  // 검색 화면에서 고른 걸음 속도/엘리베이터 필수 여부도 같이 보냄 (백엔드가
+  // 도보 시간 배율 조정 및 엘리베이터 확인된 경로만 거르는 데 씀).
+  const walkSpeedParam = walkSpeed && walkSpeed !== "normal" ? `&walk_speed=${encodeURIComponent(walkSpeed)}` : "";
+  const requireElevatorParam = requireElevator ? `&require_elevator=1` : "";
   return fetch(
-    `${ROUTE_API_BASE}/api/routes?start=${encodeURIComponent(departure)}&end=${encodeURIComponent(arrival)}&hour=${currentHour}&minute=${currentMinute}&weekday=${currentWeekday}${typeParam}`
+    `${ROUTE_API_BASE}/api/routes?start=${encodeURIComponent(departure)}&end=${encodeURIComponent(arrival)}&hour=${currentHour}&minute=${currentMinute}&weekday=${currentWeekday}${typeParam}${walkSpeedParam}${requireElevatorParam}`
   ).then(res => {
     if (!res.ok) throw new Error("경로를 불러오지 못했습니다.");
     return res.json();
@@ -1280,12 +1358,14 @@ function fetchGeneralRoutes({
 function RouteResultScreen() {
   const navigate = useNavigate();
   const location = useLocation();
-  const { departure, arrival, isAccessibilityMode, accessibilityType } =
+  const { departure, arrival, isAccessibilityMode, accessibilityType, walkSpeed, requireElevator } =
   (location.state as {
     departure: string;
     arrival: string;
     isAccessibilityMode?: boolean;
     accessibilityType?: string | null;
+    walkSpeed?: "normal" | "slow" | "wheelchair";
+    requireElevator?: boolean;
   }) || {};
 
   const [routes, setRoutes] = useState<any[]>([]);
@@ -1305,7 +1385,7 @@ function RouteResultScreen() {
     const jsDay = now.getDay();
     const currentWeekday = jsDay === 0 ? 6 : jsDay - 1;
 
-    const params = { departure, arrival, currentHour, currentMinute, currentWeekday, accessibilityType };
+    const params = { departure, arrival, currentHour, currentMinute, currentWeekday, accessibilityType, walkSpeed, requireElevator };
 
     const fetchPromise = isAccessibilityMode
       ? fetchAccessibilityRoutes(params)
@@ -1328,7 +1408,7 @@ function RouteResultScreen() {
         setError(err.message);
         setLoading(false);
       });
-  }, [departure, arrival, isAccessibilityMode, accessibilityType]);
+  }, [departure, arrival, isAccessibilityMode, accessibilityType, walkSpeed, requireElevator]);
 
   const currentRoute = routes[selectedIdx];
   const isRushHour = data?.is_rush_hour;

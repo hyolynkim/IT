@@ -370,13 +370,25 @@ def get_route_subway_congestion_trend(route, weekday, hour, minute):
     return trends
 
 
-ELDERLY_WALK_TIME_MULTIPLIER = 1.3  # 노약자 실제 체감 도보 속도 반영 (약 30% 더 걸리는 것으로 가정)
+# 검색 화면의 "걸음 속도" 선택(보통/느림/휠체어)에 따라 도보 구간 소요시간을
+# 얼마나 늘릴지. 기존엔 accessibility_type == "elderly"일 때만 1.3배 고정으로
+# 적용했지만, 이제 노약자·임산부 모두 직접 걸음 속도를 고를 수 있게 함.
+WALK_SPEED_MULTIPLIERS = {
+    "normal": 1.0,
+    "slow": 1.3,       # 기존 노약자 기본값과 동일
+    "wheelchair": 1.6,  # 휠체어는 더 큰 폭으로 체감시간을 늘림
+}
+ELDERLY_WALK_TIME_MULTIPLIER = WALK_SPEED_MULTIPLIERS["slow"]  # 하위 호환용 별칭
 
 
-def apply_elderly_walk_time(routes, multiplier=ELDERLY_WALK_TIME_MULTIPLIER):
-    """노약자 모드: 도보 구간 시간을 배율만큼 늘려서 실제 체감 시간에 가깝게 조정합니다.
+def apply_walk_time_multiplier(routes, multiplier):
+    """검색 화면에서 고른 걸음 속도(walk_speed)에 맞춰 도보 구간 시간을 배율만큼
+    늘려서 실제 체감 시간에 가깝게 조정합니다. multiplier가 1.0(보통)이면 아무
+    것도 안 바꾸고 그대로 반환합니다.
     각 경로의 walk_time_total_min / original_time_min / estimated_comfort_time_min도
     늘어난 만큼 같이 반영합니다. (제자리에서 route dict를 수정하고, 그대로 반환합니다.)"""
+    if multiplier == 1.0:
+        return routes
     for r in routes:
         sub_paths = r.get("sub_paths", [])
         original_walk_total = sum(
@@ -476,9 +488,12 @@ def select_accessibility_routes(routes, accessibility_type=None, weekday=0, hour
     # 부담이 비슷한 상위 후보들 중, 엘리베이터 정보가 실제로 확인되는 경로를
     # 우선하기 위해 상위 몇 개만 미리 엘리베이터 조회를 해둡니다 (전체를 다 조회하면
     # 공공데이터 API를 너무 많이 호출하게 돼서, 상위 후보로 범위를 좁혔어요).
+    # "엘리베이터 필수" 필터에서 이미 조회해둔 캐시가 있으면 재사용해서 API를
+    # 중복 호출하지 않습니다.
     shortlist = burden_sorted[:8]
     for r in shortlist:
-        r["_elevator_info_cache"] = get_elevator_tip_for_route(r)
+        if "_elevator_info_cache" not in r:
+            r["_elevator_info_cache"] = get_elevator_tip_for_route(r)
 
     congestion_checked = False
     if accessibility_type == "pregnant":
@@ -945,6 +960,8 @@ def get_optimal_route():
     weekday = request.args.get('weekday', default=0, type=int)
     mode = request.args.get('mode', default='accessibility', type=str)  # ⬅️ 추가
     accessibility_type = request.args.get('accessibility_type', default=None, type=str)  # elderly / pregnant / both
+    walk_speed = request.args.get('walk_speed', default='normal', type=str)  # normal / slow / wheelchair
+    require_elevator = request.args.get('require_elevator', default='0', type=str) in ('1', 'true', 'True')
 
     final_result = find_cat_optimal_route(start, end, hour, mode=mode)
 
@@ -966,10 +983,25 @@ def get_optimal_route():
     rush_hour = is_rush_hour(hour, minute, weekday)
     rush_hour_result = None
 
-    # 노약자 모드: 도보 구간 시간을 실제 체감 속도에 맞게 늘립니다.
+    # 교통약자 모드에서 "엘리베이터 필수"를 켰으면, 실제로 하차역에 엘리베이터
+    # (또는 대체 설비) 정보가 확인되는 경로만 후보로 남깁니다. 공공데이터 API를
+    # 너무 많이 호출하지 않도록 상위 15개 후보까지만 확인합니다. 조회 결과는
+    # "_elevator_info_cache"에 남겨둬서, 아래 select_accessibility_routes와
+    # 최종 응답 단계에서 API를 다시 호출하지 않고 그대로 재사용합니다.
+    if mode != 'general' and require_elevator and routes:
+        candidate_pool = routes[:15]
+        with_elevator = []
+        for r in candidate_pool:
+            r["_elevator_info_cache"] = get_elevator_tip_for_route(r)
+            if r["_elevator_info_cache"] and r["_elevator_info_cache"].get("directions"):
+                with_elevator.append(r)
+        routes = with_elevator
+        final_result["routes"] = routes
+
+    # 걸음 속도 선택(보통/느림/휠체어)에 따라 도보 구간 체감시간을 조정합니다.
     # (정렬/선택보다 먼저 적용해야, 늘어난 도보 시간 기준으로 "AI 추천 경로"가 뽑혀요.)
-    if accessibility_type == "elderly" and routes:
-        routes = apply_elderly_walk_time(routes)
+    if mode != 'general' and routes:
+        routes = apply_walk_time_multiplier(routes, WALK_SPEED_MULTIPLIERS.get(walk_speed, 1.0))
 
     # 교통약자 모드일 땐 후보 전체가 아니라, 부담 최소 3개 + 최소금액/최소시간 2개로
     # 화면에 보여줄 경로를 5개로 좁혀서 확정합니다. (accessibility_type에 따라
