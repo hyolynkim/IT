@@ -26,11 +26,26 @@ est = CongestionEstimator()
 from models.route_finder import find_cat_optimal_route
 
 try:
-    from services.general_route import get_bus_occupancy_for_route, get_gemini_general_recommendation  # ⬅️ 추가
+    from services.general_route import (
+        get_bus_occupancy_for_route,
+        get_gemini_general_recommendation,
+        # 교통약자 모드의 러시아워 추천(get_gemini_rush_hour_recommendation)도 같은
+        # Claude 클라이언트/모델/스키마를 재사용함 — 여기서 같이 가져옴.
+        _get_anthropic_client,
+        _ANTHROPIC_AVAILABLE,
+        CLAUDE_RUSH_HOUR_MODEL,
+        _RUSH_HOUR_TIP_SCHEMA,
+    )
     GENERAL_ROUTE_AVAILABLE = True
 except ModuleNotFoundError as e:
     print(f"[안내] services.general_route 모듈을 찾을 수 없어 '일반인 모드'는 비활성화됩니다: {e}")
     GENERAL_ROUTE_AVAILABLE = False
+    _ANTHROPIC_AVAILABLE = False
+
+try:
+    import anthropic  # get_gemini_rush_hour_recommendation의 예외 처리(APIStatusError)용
+except ImportError:
+    anthropic = None
 
 # elderly 브랜치에서 온, 과거 승하차 통계(bus_ridership.csv) 기반 혼잡도 모듈.
 # 위 services.general_route(GBIS 실시간 여석 기반, 일반 모드용)와는 별개로,
@@ -58,9 +73,6 @@ from subway_guide import (
 app = Flask(__name__)
 CORS(app)
 app.config['JSON_AS_ASCII'] = False
-
-GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
-
 
 def normalize_line_name(lane_name: str):
     """ODsay 등 경로 API에서 오는 노선명("수도권1호선" 등)을
@@ -669,7 +681,12 @@ def get_rush_hour_type(hour, minute, weekday):
     return "러시아워"
 
 def get_gemini_rush_hour_recommendation(routes, start, end, hour, minute, weekday, elevator_info=None, accessibility_type=None, transfer_info=None):
-    if not GEMINI_API_KEY:
+    """이름은 예전 Gemini 시절 그대로 유지했지만(앱 코드에서 이 이름으로 호출함)
+    실제로는 Claude(Anthropic API)를 호출함 — 일반 모드의
+    get_gemini_general_recommendation과 같은 이유로 교체(Gemini 무료 할당량 0).
+    프롬프트 내용(엘리베이터/환승/노약자·임산부 안내문 등)은 전혀 손대지 않고
+    호출 방식(HTTP 요청 → Anthropic SDK)과 에러 처리만 바꿈."""
+    if not _ANTHROPIC_AVAILABLE or not os.environ.get("ANTHROPIC_API_KEY"):
         return {
             "recommended_index": 0,
             "rush_hour_tip": "API 키 설정 후 러시아워 분석이 제공됩니다.",
@@ -765,31 +782,25 @@ def get_gemini_rush_hour_recommendation(routes, start, end, hour, minute, weekda
 }}
 """
 
-        url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={GEMINI_API_KEY}"
-        payload = {
-            "contents": [{"parts": [{"text": prompt}]}],
-            "generationConfig": {
-                "temperature": 0.3,
-                "maxOutputTokens": 500
-            }
+        client = _get_anthropic_client()
+        response = client.messages.create(
+            model=CLAUDE_RUSH_HOUR_MODEL,
+            max_tokens=500,
+            output_config={"format": {"type": "json_schema", "schema": _RUSH_HOUR_TIP_SCHEMA}},
+            messages=[{"role": "user", "content": prompt}],
+        )
+        text = response.content[0].text
+        return json.loads(text)
+
+    except anthropic.APIStatusError as e:
+        print(f"[Claude] 호출 실패 ({e.status_code}): {e.message}", flush=True)
+        return {
+            "recommended_index": 0,
+            "rush_hour_tip": f"분석 중 오류: Claude API {e.status_code} - {e.message}",
+            "alternative": "",
         }
-        response = requests.post(url, json=payload, timeout=10)
-
-        if response.status_code == 200:
-            result = response.json()
-            text = result["candidates"][0]["content"]["parts"][0]["text"]
-            text = text.strip().replace("```json", "").replace("```", "").strip()
-            return json.loads(text)
-        else:
-            print(f"Gemini API 상태코드: {response.status_code}, 응답: {response.text}")
-            return {
-                "recommended_index": 0,
-                "rush_hour_tip": f"Gemini API 오류 ({response.status_code})",
-                "alternative": ""
-            }
-
     except Exception as e:
-        print(f"Gemini 에러: {str(e)}")
+        print(f"[Claude] 예외 발생: {e}", flush=True)
         return {
             "recommended_index": 0,
             "rush_hour_tip": f"분석 중 오류: {str(e)}",
