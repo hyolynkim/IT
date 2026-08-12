@@ -413,27 +413,35 @@ def apply_elderly_walk_time(routes, multiplier=ELDERLY_WALK_TIME_MULTIPLIER):
     return routes
 
 
-def _route_congestion_score(route, weekday=0, hour=9, minute=0):
-    """경로의 혼잡도 점수 (낮을수록 덜 붐빔).
-    1) 지하철 구간: subway_congestion.csv의 실제 혼잡도(%)를 0~2 스케일로 환산해서 사용.
-       (34% 이하=여유(0), 34~80%=보통(1), 80%+=혼잡(2) — 서울교통공사가 실제로 쓰는 구간 기준)
-    2) 지하철 데이터가 없으면, 버스 구간 혼잡도(bus_congestion.py)를 대신 사용.
-       (지금은 실제 API 연동 전이라 항상 빈 값 → 결과적으로 0)
-    둘 다 없으면 0(=모름, 순위에 영향 안 줌)을 반환합니다."""
-    subway_pct = get_route_subway_congestion(route, weekday, hour, minute)
-    if subway_pct is not None:
-        if subway_pct < 34:
-            return 0
-        if subway_pct < 80:
-            return 1
-        return 2
+def _subway_pct_to_score(pct):
+    """지하철 혼잡도(%) → 0(여유)~2(혼잡) 점수 환산 (서울교통공사가 실제로 쓰는 구간 기준)."""
+    if pct < 34:
+        return 0
+    if pct < 80:
+        return 1
+    return 2
 
-    if not GENERAL_ROUTE_AVAILABLE:
+
+def _route_congestion_score(route, weekday=0, hour=9, minute=0):
+    """경로 전체의 "평균" 혼잡도 점수 (0=여유 ~ 2=혼잡).
+    경로 안에 있는 지하철 구간(subway_congestion.csv 기반)과 버스 구간
+    (bus_ridership.csv 기반)을 전부 모아서, 대중교통 구간별 혼잡도 점수의
+    평균을 냅니다 — 지하철이 있으면 지하철만 보는 게 아니라, 버스 구간이
+    같이 있으면 그것도 같이 반영합니다. 도보 구간은 계산에서 빠집니다.
+    데이터가 하나도 없으면 0(=모름, 순위에 영향 안 줌)을 반환합니다."""
+    scores = []
+
+    for entry in get_route_subway_congestion_list(route, weekday, hour, minute):
+        scores.append(_subway_pct_to_score(entry["current_pct"]))
+
+    if GENERAL_ROUTE_AVAILABLE:
+        occupancy = get_bus_occupancy_for_route(route.get("sub_paths", []), hour=hour, minute=minute)
+        for o in occupancy:
+            scores.append(_CONGESTION_LEVEL_SCORE.get(o.get("congestion"), 1))
+
+    if not scores:
         return 0
-    occupancy = get_bus_occupancy_for_route(route.get("sub_paths", []), hour=hour, minute=minute)
-    if not occupancy:
-        return 0
-    return sum(_CONGESTION_LEVEL_SCORE.get(o.get("congestion"), 1) for o in occupancy) / len(occupancy)
+    return sum(scores) / len(scores)
 
 
 def _build_ai_route_reason(accessibility_type, elevator_found, congestion_checked):
@@ -527,10 +535,6 @@ def select_accessibility_routes(routes, accessibility_type=None, weekday=0, hour
     burden_routes = shortlist[:3]
     chosen_ids = {id(r) for r in burden_routes}
 
-    # "최소 금액"/"최소 시간"은 전체 후보 중 진짜 1등만 인정합니다.
-    # (AI 추천 경로를 제외한 나머지 중에서만 찾으면, 진짜 최저가/최단시간이
-    # 이미 AI 추천 쪽에 들어있을 때 모순이 생길 수 있어서요.) 이미 AI 추천
-    # 경로 중 하나가 그 기준으로도 1등이면, 중복된 탭으로 또 보여주지 않고 건너뜁니다.
     true_cheapest = min(routes, key=lambda r: r.get("payment_krw", 0))
     cost_route = None if id(true_cheapest) in chosen_ids else true_cheapest
     if cost_route is not None:
@@ -763,12 +767,6 @@ def get_optimal_route():
     rush_hour = is_rush_hour(hour, minute, weekday)
     rush_hour_result = None
 
-    # 교통약자 모드(mode != 'general')일 때만 엘리베이터 인접 하차칸 정보를 조회합니다.
-    # (러시아워 여부와 상관없이 항상 계산 — 엘리베이터 위치는 혼잡도와 무관한 정보라서요)
-    # 화면에서 사용자가 다른 경로를 선택할 수 있으므로, 상위 경로들 각각에 대해 계산해
-    # 프론트가 선택된 경로(selectedIdx)에 맞는 정보를 보여줄 수 있게 합니다.
-    # transfer_info_list의 각 원소는 그 경로에 있는 "모든" 환승 지점 리스트입니다
-    # (환승이 여러 번 있는 경로도 전부 반영 — 예전엔 첫 환승만 반영됐던 부분 수정).
     elevator_info_list = []
     transfer_info_list = []
     bus_occupancy_list = []
