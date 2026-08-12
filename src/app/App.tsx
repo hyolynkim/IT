@@ -654,36 +654,51 @@ function MyTransitTab() {
             </div>
           ))}
 
-          {congestionBookmarks.map(b => (
-            <div
-              key={b.id}
-              className="w-full bg-white rounded-xl p-3 shadow-sm flex items-center justify-between gap-3 border border-gray-100"
-            >
-              <div className="flex items-center gap-2 min-w-0">
-                <span
-                  className="px-1.5 py-0.5 rounded text-[10px] font-semibold flex-shrink-0"
-                  style={{
-                    backgroundColor: b.kind === "subwayCongestion" ? getSubwayLineColor(b.line) : "#374151",
-                    color: b.kind === "subwayCongestion" ? getReadableTextColor(getSubwayLineColor(b.line)) : "#FFFFFF",
-                  }}
-                >
-                  {b.line}
-                </span>
-                <span className="font-semibold text-gray-800 truncate">{b.name}</span>
-                {b.direction && <span className="text-xs text-gray-400 flex-shrink-0">{b.direction}</span>}
-                <span className="text-[10px] text-gray-400 flex-shrink-0">
-                  {b.kind === "busCongestion" ? "버스" : "지하철"}
-                </span>
-              </div>
-              <button
-                onClick={() => handleRemoveBookmark(b.id)}
-                className="flex-shrink-0 p-1"
-                aria-label="북마크 삭제"
+          {congestionBookmarks.map(b => {
+            const levelBadgeStyle: Record<string, string> = {
+              "여유": "bg-green-100 text-green-700",
+              "쾌적": "bg-green-100 text-green-700",
+              "보통": "bg-yellow-100 text-yellow-700",
+              "혼잡": "bg-red-100 text-red-700",
+            };
+            return (
+              <div
+                key={b.id}
+                className="w-full bg-white rounded-xl p-3 shadow-sm flex items-center justify-between gap-3 border border-gray-100"
               >
-                <Star className="w-5 h-5" fill="#facc15" stroke="#facc15" />
-              </button>
-            </div>
-          ))}
+                <div className="flex items-center gap-2 min-w-0">
+                  <span
+                    className="px-1.5 py-0.5 rounded text-[10px] font-semibold flex-shrink-0"
+                    style={{
+                      backgroundColor: b.kind === "subwayCongestion" ? getSubwayLineColor(b.line) : "#374151",
+                      color: b.kind === "subwayCongestion" ? getReadableTextColor(getSubwayLineColor(b.line)) : "#FFFFFF",
+                    }}
+                  >
+                    {b.line}
+                  </span>
+                  <span className="font-semibold text-gray-800 truncate">{b.name}</span>
+                  {b.direction && <span className="text-xs text-gray-400 flex-shrink-0">{b.direction}</span>}
+                  <span className="text-[10px] text-gray-400 flex-shrink-0">
+                    {b.kind === "busCongestion" ? "버스" : "지하철"}
+                  </span>
+                </div>
+                <div className="flex items-center gap-2 flex-shrink-0">
+                  {b.level && (
+                    <span className={`px-2 py-0.5 rounded-full text-[11px] font-semibold ${levelBadgeStyle[b.level] || "bg-gray-100 text-gray-500"}`}>
+                      {b.level}
+                    </span>
+                  )}
+                  <button
+                    onClick={() => handleRemoveBookmark(b.id)}
+                    className="p-1"
+                    aria-label="북마크 삭제"
+                  >
+                    <Star className="w-5 h-5" fill="#facc15" stroke="#facc15" />
+                  </button>
+                </div>
+              </div>
+            );
+          })}
         </div>
       )}
 
@@ -1046,22 +1061,54 @@ function CongestionTab() {
                 <p className="text-xs text-gray-400">경유 정류소 {route.stations.length}개</p>
 
                 <div className="space-y-2 max-h-96 overflow-y-auto pr-1">
-                  {route.stations.map((s: any) => (
-                    <div key={s.stopId} className="border border-gray-100 rounded-lg p-2.5">
-                      <div className="flex items-center justify-between mb-1.5">
-                        <span className="text-sm font-semibold text-gray-800 truncate">{s.stationName}</span>
-                        <span className={`px-2 py-0.5 rounded-full text-[11px] font-semibold flex-shrink-0 ml-2 ${getStatsLevelStyle(s.level)}`}>
-                          {s.level}
-                        </span>
+                  {route.stations.map((s: any) => {
+                    const stopBookmarked = isCongestionBookmarked(
+                      "busCongestion",
+                      s.stationName,
+                      route.routeNm,
+                      undefined,
+                      s.stopId
+                    );
+                    return (
+                      <div key={s.stopId} className="border border-gray-100 rounded-lg p-2.5">
+                        <div className="flex items-center justify-between mb-1.5">
+                          <span className="text-sm font-semibold text-gray-800 truncate">{s.stationName}</span>
+                          <div className="flex items-center gap-1 flex-shrink-0 ml-2">
+                            <span className={`px-2 py-0.5 rounded-full text-[11px] font-semibold ${getStatsLevelStyle(s.level)}`}>
+                              {s.level}
+                            </span>
+                            <button
+                              onClick={() => {
+                                toggleCongestionBookmark({
+                                  kind: "busCongestion",
+                                  name: s.stationName,
+                                  line: route.routeNm,
+                                  stopId: s.stopId,
+                                  level: s.level,
+                                  percent: s.barPercent,
+                                });
+                                setBookmarkTick(t => t + 1);
+                              }}
+                              className="p-0.5"
+                              aria-label="정류소 북마크"
+                            >
+                              <Star
+                                className="w-4 h-4"
+                                fill={stopBookmarked ? "#facc15" : "none"}
+                                stroke={stopBookmarked ? "#facc15" : "#9ca3af"}
+                              />
+                            </button>
+                          </div>
+                        </div>
+                        <div className="bg-gray-100 rounded-full h-1.5">
+                          <div
+                            className={`h-1.5 rounded-full ${getStatsBarColor(s.level)}`}
+                            style={{ width: `${s.barPercent}%` }}
+                          />
+                        </div>
                       </div>
-                      <div className="bg-gray-100 rounded-full h-1.5">
-                        <div
-                          className={`h-1.5 rounded-full ${getStatsBarColor(s.level)}`}
-                          style={{ width: `${s.barPercent}%` }}
-                        />
-                      </div>
-                    </div>
-                  ))}
+                    );
+                  })}
                 </div>
               </div>
             );
@@ -1069,12 +1116,13 @@ function CongestionTab() {
         </div>
       )}
 
+
       
       {/* 그 외 도시(실시간 GBIS/TAGO) 검색 결과: 서울과 동일하게 정류소별 카드로 표시 */}
       {busResults.length > 0 && busSource === "gbis" && (
         <div className="space-y-3">
           {busResults.map((route) => {
-            const bookmarked = isBusBookmarked(bookmarks, route.routeId, route.direction);
+            const routeBookmarked = isBusBookmarked(bookmarks, route.routeId, route.direction);
             return (
               <div key={`${route.routeId}-${route.direction}`} className="bg-white rounded-xl p-4 shadow-sm border border-gray-100 space-y-3">
                 <div className="flex items-center justify-between">
@@ -1084,8 +1132,9 @@ function CongestionTab() {
                   </div>
                   <button
                     onClick={() => setBookmarks(toggleBusBookmark({ routeId: route.routeId, routeNm: route.routeNm, direction: route.direction }))}
+                    aria-label="노선 전체 북마크"
                   >
-                    <Star className={`w-5 h-5 ${bookmarked ? "fill-yellow-400 text-yellow-400" : "text-gray-300"}`} />
+                    <Star className={`w-5 h-5 ${routeBookmarked ? "fill-yellow-400 text-yellow-400" : "text-gray-300"}`} />
                   </button>
                 </div>
                 <p className="text-xs text-gray-400">경유 정류소 {route.stations.length}개</p>
@@ -1097,13 +1146,45 @@ function CongestionTab() {
                       : level === 4 ? { badge: "bg-yellow-100 text-yellow-700", bar: "bg-yellow-500", pct: 60, label: "보통" }
                       : level === 3 ? { badge: "bg-green-100 text-green-700", bar: "bg-green-500", pct: 25, label: "여유" }
                       : { badge: "bg-gray-100 text-gray-500", bar: "bg-gray-300", pct: 0, label: "도착예정정보없음" };
+                    const stopKey = s.nodeId ?? s.stationId ?? idx;
+                    const stopBookmarked = isCongestionBookmarked(
+                      "busCongestion",
+                      s.stationName,
+                      route.routeNm,
+                      route.direction,
+                      stopKey
+                    );
                     return (
                       <div key={idx} className="border border-gray-100 rounded-lg p-2.5">
                         <div className="flex items-center justify-between mb-1.5">
                           <span className="text-sm font-semibold text-gray-800 truncate">{s.stationName}</span>
-                          <span className={`px-2 py-0.5 rounded-full text-[11px] font-semibold flex-shrink-0 ml-2 ${cg.badge}`}>
-                            {cg.label}
-                          </span>
+                          <div className="flex items-center gap-1 flex-shrink-0 ml-2">
+                            <span className={`px-2 py-0.5 rounded-full text-[11px] font-semibold ${cg.badge}`}>
+                              {cg.label}
+                            </span>
+                            <button
+                              onClick={() => {
+                                toggleCongestionBookmark({
+                                  kind: "busCongestion",
+                                  name: s.stationName,
+                                  line: route.routeNm,
+                                  direction: route.direction,
+                                  stopId: stopKey,
+                                  level: cg.label,
+                                  percent: cg.pct,
+                                });
+                                setBookmarkTick(t => t + 1);
+                              }}
+                              className="p-0.5"
+                              aria-label="정류소 북마크"
+                            >
+                              <Star
+                                className="w-4 h-4"
+                                fill={stopBookmarked ? "#facc15" : "none"}
+                                stroke={stopBookmarked ? "#facc15" : "#9ca3af"}
+                              />
+                            </button>
+                          </div>
                         </div>
                         <div className="bg-gray-100 rounded-full h-1.5">
                           <div className={`h-1.5 rounded-full ${cg.bar}`} style={{ width: `${cg.pct}%` }} />
@@ -1145,13 +1226,15 @@ function CongestionTab() {
                           <span className={`px-2 py-0.5 rounded-md text-[10px] whitespace-nowrap font-semibold ${congestion.badge}`}>
                             {congestion.label}
                           </span>
-                          <button
+                                    <button
                             onClick={() => {
                               toggleCongestionBookmark({
                                 kind: "subwayCongestion",
                                 name: stationName,
                                 line: lineName,
                                 direction,
+                                level: congestion.label,
+                                percent: displayPercent,
                               });
                               setBookmarkTick(t => t + 1);
                             }}
