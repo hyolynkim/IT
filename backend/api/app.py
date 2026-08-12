@@ -437,10 +437,10 @@ def _build_ai_route_reason(accessibility_type, elevator_found, congestion_checke
     return "환승과 도보가 적은 경로입니다."
 
 
-def select_accessibility_routes(routes, accessibility_type=None, weekday=0, hour=9, minute=0):
+def select_accessibility_routes(routes, accessibility_type=None, weekday=0, hour=9, minute=0, rush_hour=False):
     """노약자/임산부 모드에서 화면에 보여줄 경로 5개를 고릅니다.
 
-    accessibility_type에 따라 "AI 추천 경로" 3개를 고르는 기준이 달라집니다:
+    accessibility_type에 따라 앞 3개(burden 카테고리)를 고르는 기준이 달라집니다:
       - "elderly" (노약자): 도보 최소화 → 종착지 엘리베이터 유무 순
       - "pregnant" (임산부): 혼잡도(서울 버스·지하철) 최소화 → 종착지 엘리베이터
         유무 → 도보 최소화 순
@@ -450,8 +450,13 @@ def select_accessibility_routes(routes, accessibility_type=None, weekday=0, hour
       그리고 예상 소요시간이 가장 짧은 것 1개("최소 시간", 다른 조건은 안 봄).
 
     각 경로 dict에 category("burden"/"cost"/"time")와 그에 맞는
-    category_label(화면에 보여줄 탭 이름)을 붙여서 반환합니다. "burden"
-    카테고리(AI 추천 경로 3개)에는 무슨 기준으로 뽑혔는지 설명하는
+    category_label(화면에 보여줄 탭 이름)을 붙여서 반환합니다. burden 카테고리는
+    선택 기준 자체는 시간대와 무관하게 항상 동일하게 적용되지만, 화면에 "AI 추천"
+    이라고 부르는 건 실제로 Claude가 이 경로를 분석해주는 러시아워 시간대에만
+    맞는 표현이라(하단 rush_hour_result 배너와 짝을 맞춰야 함 — 안 그러면 "지금은
+    AI 추천이 제공되지 않아요" 안내랑 위쪽 탭 이름이 "AI 추천 경로"라서 서로
+    모순돼 보이는 문제가 있었음), rush_hour가 아닐 땐 그냥 "추천 경로 N"으로
+    라벨링합니다. "burden" 카테고리에는 무슨 기준으로 뽑혔는지 설명하는
     ai_reason 문구도 같이 붙입니다.
     이미 계산한 엘리베이터 정보는 "_elevator_info_cache"에 담아두는데,
     호출한 쪽(get_optimal_route)에서 이 캐시를 그대로 재사용하고 지워야 합니다.
@@ -530,7 +535,7 @@ def select_accessibility_routes(routes, accessibility_type=None, weekday=0, hour
         info = r.get("_elevator_info_cache")
         elevator_found = bool(info and info.get("directions"))
         r["category"] = "burden"
-        r["category_label"] = f"AI 추천 경로 {i + 1}"
+        r["category_label"] = f"AI 추천 경로 {i + 1}" if rush_hour else f"추천 경로 {i + 1}"
         r["ai_reason"] = _build_ai_route_reason(accessibility_type, elevator_found, congestion_checked)
         result.append(r)
     if cost_route is not None:
@@ -971,7 +976,8 @@ def get_optimal_route():
     # 노약자는 도보 최소화, 임산부는 혼잡도 최소화 기준으로 다르게 고릅니다.)
     if mode != 'general' and routes:
         routes = select_accessibility_routes(
-            routes, accessibility_type=accessibility_type, weekday=weekday, hour=hour, minute=minute
+            routes, accessibility_type=accessibility_type, weekday=weekday, hour=hour, minute=minute,
+            rush_hour=rush_hour,
         )
         final_result["routes"] = routes
     # 일반 모드는 "AI 러시아워 추천"이 실제 러시아워 시간대에만 적용되도록 합니다.

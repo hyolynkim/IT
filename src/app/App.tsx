@@ -1593,7 +1593,7 @@ function RouteResultScreen() {
                       {busOccupancy && (
                         <div className={`ml-[76px] mt-2 border rounded-lg p-2.5 ${congestionBoxClass(busOccupancy.congestion)}`}>
                           <p className="text-xs leading-relaxed">
-                            🚌 평균 혼잡도: <b>{busOccupancy.congestion}</b> (평균 {busOccupancy.avg_boarding_count}명)
+                            🚌 평균 혼잡도: <b>{busOccupancy.congestion}</b>
                           </p>
                         </div>
                       )}
