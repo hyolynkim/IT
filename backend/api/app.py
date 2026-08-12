@@ -697,6 +697,10 @@ def is_rush_hour(hour, minute, weekday):
     - 월~목: 새벽 05:30~07:30, 오후 16:30~19:30
     - 금~일: 새벽 05:30~07:30, 오후 16:30~19:30, 밤 21:00~23:00 (한 타임 더)
     """
+    # ⚠️ 데모 영상 촬영용 임시 우회 — 시간대와 무관하게 항상 러시아워로 취급.
+    # 촬영 끝나면 이 return True 줄만 지우면 원래 로직으로 바로 복귀됨.
+    return True
+
     total_min = hour * 60 + minute
     morning = 5 * 60 + 30 <= total_min <= 7 * 60 + 30
     evening = 16 * 60 + 30 <= total_min <= 19 * 60 + 30
