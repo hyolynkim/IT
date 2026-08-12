@@ -1389,7 +1389,11 @@ function RouteResultScreen() {
   };
 
   return (
-    <div className="size-full flex flex-col bg-gray-50">
+    <div
+      className="size-full flex flex-col bg-gray-50"
+      // 노약자 모드: 화면 전체를 살짝 확대해서 글씨를 더 크게 보여줌 (elderly 브랜치 원본 그대로)
+      style={accessibilityType === "elderly" ? { zoom: 1.2 } : undefined}
+    >
       <div className="bg-white border-b border-gray-200 p-4">
         <button onClick={() => navigate(-1)} className="text-blue-600 font-semibold mb-3">
           ← 돌아가기
@@ -1535,7 +1539,9 @@ function RouteResultScreen() {
                 {currentRoute.sub_paths && currentRoute.sub_paths.length > 0 ? (
                   currentRoute.sub_paths.map((sub: any, sIdx: number) => {
                     // 교통약자 모드 전용 보조 정보 (과거 통계 기반 — 일반 모드의 실시간
-                    // GBIS 여석 정보(sub.bus_congestion)와는 별개로 계산됨)
+                    // GBIS 여석 정보(sub.bus_congestion)와는 별개로 계산됨). 혼잡도는
+                    // "구간 정보 옆"이 아니라 환승/엘리베이터 안내처럼 아래에 카드로
+                    // 따로 보여줍니다 (elderly 브랜치 원본 레이아웃).
                     const subwayCongestion = isAccessibilityMode && sub.traffic_type === 1
                       ? getSubwayCongestionForLeg(sub.start_name) : null;
                     const subwayTrend = isAccessibilityMode && sub.traffic_type === 1
@@ -1544,10 +1550,19 @@ function RouteResultScreen() {
                       ? getBusOccupancyForLeg(sub.lane_name, sub.start_name, sub.end_name) : null;
                     const busTrend = isAccessibilityMode && sub.traffic_type === 2
                       ? getBusTrendForLeg(sub.lane_name, sub.start_name, sub.end_name) : null;
-                    const transferTip = isAccessibilityMode
-                      ? getTransferInfoForStation(sub.start_name) : null;
-                    const showElevatorTip = isAccessibilityMode && sIdx === lastSubwayLegIdx
-                      && selectedElevatorInfo?.directions?.[0];
+                    // 환승 안내는 지하철 구간을 "내리는" 역(end_name) 기준 — 그 역에서
+                    // 다음 구간으로 갈아탈 때의 칸/문 정보이기 때문에 start_name이 아님.
+                    const transferTip = isAccessibilityMode && sub.traffic_type === 1
+                      ? getTransferInfoForStation(sub.end_name) : null;
+                    const showElevatorTip = isAccessibilityMode && sub.traffic_type === 1
+                      && sIdx === lastSubwayLegIdx && selectedElevatorInfo?.directions?.[0];
+
+                    const congestionBoxClass = (level: string) =>
+                      level === "혼잡" ? "bg-red-50 border-red-200 text-red-800"
+                      : level === "보통" ? "bg-amber-50 border-amber-200 text-amber-800"
+                      : "bg-green-50 border-green-200 text-green-800";
+                    const trendBoxClass = (direction: string) =>
+                      direction === "up" ? "bg-red-50 border-red-200 text-red-800" : "bg-green-50 border-green-200 text-green-800";
 
                     return (
                     <div key={sIdx} className="flex flex-col">
@@ -1571,36 +1586,65 @@ function RouteResultScreen() {
                             {sub.traffic_type === 2 && sub.bus_congestion && (
                               <CongestionBadge level={sub.bus_congestion.level} label={sub.bus_congestion.label} />
                             )}
-                            {subwayCongestion && (
-                              <CongestionBadge level={subwayCongestion.congestion} label={`${subwayCongestion.current_pct}%`} />
-                            )}
-                            {busOccupancy && (
-                              <CongestionBadge level={busOccupancy.congestion} label={`평균 ${busOccupancy.avg_boarding_count}명`} />
-                            )}
                           </div>
-                          {subwayTrend && (
-                            <div className="text-xs text-emerald-700 mt-1">
-                              📈 {subwayTrend.minutes_until_next}분 후 혼잡도 {subwayTrend.direction === "up" ? "상승" : "하락"} — {subwayTrend.recommendation}
-                            </div>
-                          )}
-                          {busTrend?.recommendation && (
-                            <div className="text-xs text-emerald-700 mt-1">📈 {busTrend.recommendation}</div>
-                          )}
-                          {transferTip?.options?.[0] && (
-                            <div className="text-xs text-purple-700 bg-purple-50 border border-purple-100 rounded-lg px-2 py-1 mt-1">
-                              🔀 {transferTip.options[0].alight_car}-{transferTip.options[0].alight_door} 문 근처에서 내리면{" "}
-                              {transferTip.options[0].to_direction} {transferTip.options[0].board_car}-{transferTip.options[0].board_door} 문
-                              바로 앞이라 빠르게 환승할 수 있어요
-                            </div>
-                          )}
-                          {showElevatorTip && (
-                            <div className="text-xs text-teal-700 bg-teal-50 border border-teal-100 rounded-lg px-2 py-1 mt-1">
-                              🛗 {selectedElevatorInfo.directions[0].car}-{selectedElevatorInfo.directions[0].door}호차에서
-                              타시면 {selectedElevatorInfo.station} 하차 시 엘리베이터가 가까워요
-                            </div>
-                          )}
                         </div>
                       </div>
+
+                      {busOccupancy && (
+                        <div className={`ml-[76px] mt-2 border rounded-lg p-2.5 ${congestionBoxClass(busOccupancy.congestion)}`}>
+                          <p className="text-xs leading-relaxed">
+                            🚌 평균 혼잡도: <b>{busOccupancy.congestion}</b> (평균 {busOccupancy.avg_boarding_count}명)
+                          </p>
+                        </div>
+                      )}
+                      {busTrend && (
+                        <div className={`ml-[76px] mt-2 border rounded-lg p-2.5 ${trendBoxClass(busTrend.direction)}`}>
+                          <p className="text-xs leading-relaxed">
+                            {busTrend.direction === "up" ? "⚠️" : "🟢"}{" "}
+                            {busTrend.minutes_until_next}분 후면 혼잡도가 <b>{Math.abs(busTrend.diff_pct)}%</b>{" "}
+                            {busTrend.direction === "up" ? "더 올라요" : "더 낮아져요"}
+                          </p>
+                          {busTrend.recommendation && (
+                            <p className="text-xs font-semibold mt-1">💡 {busTrend.recommendation}</p>
+                          )}
+                        </div>
+                      )}
+                      {subwayCongestion && (
+                        <div className={`ml-[76px] mt-2 border rounded-lg p-2.5 ${congestionBoxClass(subwayCongestion.congestion)}`}>
+                          <p className="text-xs leading-relaxed">
+                            🚇 평균 혼잡도: <b>{subwayCongestion.congestion}</b> ({subwayCongestion.current_pct}%)
+                          </p>
+                        </div>
+                      )}
+                      {subwayTrend && (
+                        <div className={`ml-[76px] mt-2 border rounded-lg p-2.5 ${trendBoxClass(subwayTrend.direction)}`}>
+                          <p className="text-xs leading-relaxed">
+                            {subwayTrend.direction === "up" ? "⚠️" : "🟢"}{" "}
+                            {subwayTrend.minutes_until_next}분 후면 혼잡도가 <b>{Math.abs(subwayTrend.diff_pct)}%</b>{" "}
+                            {subwayTrend.direction === "up" ? "더 올라요" : "더 낮아져요"}
+                          </p>
+                          {subwayTrend.recommendation && (
+                            <p className="text-xs font-semibold mt-1">💡 {subwayTrend.recommendation}</p>
+                          )}
+                        </div>
+                      )}
+                      {transferTip?.options?.[0] && (
+                        <div className="ml-[76px] mt-2 bg-sky-50 border border-sky-200 rounded-lg p-2.5">
+                          <p className="text-xs text-sky-800 leading-relaxed">
+                            🔄 <b>{transferTip.options[0].alight_car}-{transferTip.options[0].alight_door}호차</b>에서
+                            타시면 {transferTip.station} 환승이 편해요
+                          </p>
+                        </div>
+                      )}
+                      {showElevatorTip && (
+                        <div className="ml-[76px] mt-2 bg-sky-50 border border-sky-200 rounded-lg p-2.5">
+                          <p className="text-xs text-sky-800 leading-relaxed">
+                            🛗 <b>{selectedElevatorInfo.directions[0].car}-{selectedElevatorInfo.directions[0].door}호차</b>에서
+                            타시면 {selectedElevatorInfo.station} 하차 시 엘리베이터가 가까워요
+                          </p>
+                        </div>
+                      )}
+
                       {sIdx < currentRoute.sub_paths.length - 1 && (
                         <div className="w-0.5 h-4 bg-gray-200 ml-8 my-1" />
                       )}
