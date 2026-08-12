@@ -1239,6 +1239,7 @@ type RouteFetchParams = {
   currentHour: number;
   currentMinute: number;
   currentWeekday: number;
+  accessibilityType?: string | null;
 };
 
 // ══════════════════════════════════════════════════════════════
@@ -1247,10 +1248,14 @@ type RouteFetchParams = {
 // 이 함수 안의 fetch URL과 파라미터를 여기서 수정하세요.
 // ══════════════════════════════════════════
 function fetchAccessibilityRoutes({
-  departure, arrival, currentHour, currentMinute, currentWeekday,
+  departure, arrival, currentHour, currentMinute, currentWeekday, accessibilityType,
 }: RouteFetchParams) {
+  // accessibilityType(elderly/pregnant/both)에 따라 백엔드의 select_accessibility_routes가
+  // 도보 최소화(노약자) / 혼잡도 최소화(임산부) 등 다른 기준으로 경로를 고름 — 반드시 같이 보내야 함
+  // (예전엔 이 값을 안 보내서 노약자를 선택해도 항상 기본(환승·도보) 기준으로만 골랐었음).
+  const typeParam = accessibilityType ? `&accessibility_type=${encodeURIComponent(accessibilityType)}` : "";
   return fetch(
-    `${ROUTE_API_BASE}/api/routes?start=${encodeURIComponent(departure)}&end=${encodeURIComponent(arrival)}&hour=${currentHour}&minute=${currentMinute}&weekday=${currentWeekday}`
+    `${ROUTE_API_BASE}/api/routes?start=${encodeURIComponent(departure)}&end=${encodeURIComponent(arrival)}&hour=${currentHour}&minute=${currentMinute}&weekday=${currentWeekday}${typeParam}`
   ).then(res => {
     if (!res.ok) throw new Error("경로를 불러오지 못했습니다.");
     return res.json();
@@ -1289,6 +1294,7 @@ function RouteResultScreen() {
   const [error, setError] = useState<string | null>(null);
   const [selectedIdx, setSelectedIdx] = useState(0);
   const [bookmarkTick, setBookmarkTick] = useState(0); // 북마크 토글 시 재렌더용
+  const [showAiReason, setShowAiReason] = useState(false); // 교통약자 모드 "AI 추천 이유" 토글
 
    useEffect(() => {
     if (!departure || !arrival) return;
@@ -1299,7 +1305,7 @@ function RouteResultScreen() {
     const jsDay = now.getDay();
     const currentWeekday = jsDay === 0 ? 6 : jsDay - 1;
 
-    const params = { departure, arrival, currentHour, currentMinute, currentWeekday };
+    const params = { departure, arrival, currentHour, currentMinute, currentWeekday, accessibilityType };
 
     const fetchPromise = isAccessibilityMode
       ? fetchAccessibilityRoutes(params)
@@ -1322,10 +1328,45 @@ function RouteResultScreen() {
         setError(err.message);
         setLoading(false);
       });
-  }, [departure, arrival, isAccessibilityMode]);
+  }, [departure, arrival, isAccessibilityMode, accessibilityType]);
 
   const currentRoute = routes[selectedIdx];
   const isRushHour = data?.is_rush_hour;
+
+  // 지금 선택된 경로의 엘리베이터/환승/혼잡도 안내 (교통약자 모드 전용 — 역명으로
+  // 어느 구간에 붙일지 매칭합니다). is_rush_hour 여부와 무관하게 항상 계산됨.
+  const selectedElevatorInfo = data?.elevator_info_list?.[selectedIdx];
+  // 지금 선택된 경로의 "모든" 환승 지점 목록 (환승이 여러 번 있으면 원소도 여러 개)
+  const selectedTransferInfoList: any[] = data?.transfer_info_list?.[selectedIdx] ?? [];
+  const getTransferInfoForStation = (station: string) =>
+    selectedTransferInfoList.find((t: any) => t.station === station);
+  // 버스 구간 평균 혼잡도 (과거 승하차 통계 기반 — 일반 모드의 실시간 GBIS 여석과는 별개)
+  const selectedBusOccupancyList: any[] = data?.bus_occupancy_list?.[selectedIdx] ?? [];
+  const getBusOccupancyForLeg = (laneName: string, startName: string, endName: string) =>
+    selectedBusOccupancyList.find(
+      (o: any) => o.lane_name === laneName && o.start_name === startName && o.end_name === endName
+    );
+  // 지하철 구간별 "지금 평균 혼잡도" 안내
+  const selectedSubwayCongestionList: any[] = data?.subway_congestion_list?.[selectedIdx] ?? [];
+  const getSubwayCongestionForLeg = (station: string) =>
+    selectedSubwayCongestionList.find((c: any) => c.station === station);
+  // 지하철/버스 구간별 "다음 시간대 혼잡도가 오르는지/내리는지" 안내
+  const selectedSubwayTrendList: any[] = data?.subway_congestion_trend_list?.[selectedIdx] ?? [];
+  const getSubwayTrendForLeg = (station: string) =>
+    selectedSubwayTrendList.find((t: any) => t.station === station);
+  const selectedBusTrendList: any[] = data?.bus_congestion_trend_list?.[selectedIdx] ?? [];
+  const getBusTrendForLeg = (laneName: string, startName: string, endName: string) =>
+    selectedBusTrendList.find(
+      (t: any) => t.lane_name === laneName && t.start_name === startName && t.end_name === endName
+    );
+  // 도보로 갈아타기 전, 마지막으로 타는 지하철 구간의 인덱스
+  // (엘리베이터 안내는 역명 매칭이 아니라 이 구간에 항상 붙입니다 — 하차역과 정확히 일치)
+  const lastSubwayLegIdx = currentRoute?.sub_paths
+    ? currentRoute.sub_paths.reduce(
+        (lastIdx: number, s: any, i: number) => (s.traffic_type === 1 ? i : lastIdx),
+        -1
+      )
+    : -1;
 
   const getRouteLabel = (idx: number) => {
     // 백엔드(select_general_routes/select_accessibility_routes)가 각 경로에
@@ -1394,7 +1435,10 @@ function RouteResultScreen() {
               return (
                 <button
                   key={idx}
-                  onClick={() => setSelectedIdx(idx)}
+                  onClick={() => {
+                    setSelectedIdx(idx);
+                    setShowAiReason(false);
+                  }}
                   className={`flex-shrink-0 px-4 py-3 rounded-xl border-2 transition-all ${
                     isSelected
                       ? isAI ? "bg-orange-500 text-white border-orange-500" : "bg-blue-600 text-white border-blue-600"
@@ -1464,6 +1508,23 @@ function RouteResultScreen() {
                 </div>
               </div>
 
+              {isAccessibilityMode && currentRoute?.ai_reason && (
+                <div className="mb-4">
+                  <button
+                    onClick={() => setShowAiReason(prev => !prev)}
+                    aria-label="AI 추천 이유 보기"
+                    className="w-8 h-8 flex items-center justify-center text-base bg-orange-50 border border-orange-200 rounded-full hover:bg-orange-100 transition-colors"
+                  >
+                    💡
+                  </button>
+                  {showAiReason && (
+                    <p className="text-xs text-orange-700 bg-orange-50 border border-orange-100 rounded-lg px-3 py-2 mt-2">
+                      {currentRoute.ai_reason}
+                    </p>
+                  )}
+                </div>
+              )}
+
               {getTimeDiff(currentRoute) && (
                 <div className="bg-blue-50 rounded-lg px-3 py-2 text-sm text-blue-700 text-center mb-4">
                   기본 경로 대비 {getTimeDiff(currentRoute)} 소요
@@ -1472,7 +1533,23 @@ function RouteResultScreen() {
 
               <div className="border-t border-gray-200 pt-4 space-y-4">
                 {currentRoute.sub_paths && currentRoute.sub_paths.length > 0 ? (
-                  currentRoute.sub_paths.map((sub: any, sIdx: number) => (
+                  currentRoute.sub_paths.map((sub: any, sIdx: number) => {
+                    // 교통약자 모드 전용 보조 정보 (과거 통계 기반 — 일반 모드의 실시간
+                    // GBIS 여석 정보(sub.bus_congestion)와는 별개로 계산됨)
+                    const subwayCongestion = isAccessibilityMode && sub.traffic_type === 1
+                      ? getSubwayCongestionForLeg(sub.start_name) : null;
+                    const subwayTrend = isAccessibilityMode && sub.traffic_type === 1
+                      ? getSubwayTrendForLeg(sub.start_name) : null;
+                    const busOccupancy = isAccessibilityMode && sub.traffic_type === 2
+                      ? getBusOccupancyForLeg(sub.lane_name, sub.start_name, sub.end_name) : null;
+                    const busTrend = isAccessibilityMode && sub.traffic_type === 2
+                      ? getBusTrendForLeg(sub.lane_name, sub.start_name, sub.end_name) : null;
+                    const transferTip = isAccessibilityMode
+                      ? getTransferInfoForStation(sub.start_name) : null;
+                    const showElevatorTip = isAccessibilityMode && sIdx === lastSubwayLegIdx
+                      && selectedElevatorInfo?.directions?.[0];
+
+                    return (
                     <div key={sIdx} className="flex flex-col">
                       <div className="flex items-start gap-3">
                         <div className={`w-16 h-7 rounded-full flex items-center justify-center font-bold text-xs flex-shrink-0 ${
@@ -1494,14 +1571,42 @@ function RouteResultScreen() {
                             {sub.traffic_type === 2 && sub.bus_congestion && (
                               <CongestionBadge level={sub.bus_congestion.level} label={sub.bus_congestion.label} />
                             )}
+                            {subwayCongestion && (
+                              <CongestionBadge level={subwayCongestion.congestion} label={`${subwayCongestion.current_pct}%`} />
+                            )}
+                            {busOccupancy && (
+                              <CongestionBadge level={busOccupancy.congestion} label={`평균 ${busOccupancy.avg_boarding_count}명`} />
+                            )}
                           </div>
+                          {subwayTrend && (
+                            <div className="text-xs text-emerald-700 mt-1">
+                              📈 {subwayTrend.minutes_until_next}분 후 혼잡도 {subwayTrend.direction === "up" ? "상승" : "하락"} — {subwayTrend.recommendation}
+                            </div>
+                          )}
+                          {busTrend?.recommendation && (
+                            <div className="text-xs text-emerald-700 mt-1">📈 {busTrend.recommendation}</div>
+                          )}
+                          {transferTip?.options?.[0] && (
+                            <div className="text-xs text-purple-700 bg-purple-50 border border-purple-100 rounded-lg px-2 py-1 mt-1">
+                              🔀 {transferTip.options[0].alight_car}-{transferTip.options[0].alight_door} 문 근처에서 내리면{" "}
+                              {transferTip.options[0].to_direction} {transferTip.options[0].board_car}-{transferTip.options[0].board_door} 문
+                              바로 앞이라 빠르게 환승할 수 있어요
+                            </div>
+                          )}
+                          {showElevatorTip && (
+                            <div className="text-xs text-teal-700 bg-teal-50 border border-teal-100 rounded-lg px-2 py-1 mt-1">
+                              🛗 {selectedElevatorInfo.directions[0].car}-{selectedElevatorInfo.directions[0].door}호차에서
+                              타시면 {selectedElevatorInfo.station} 하차 시 엘리베이터가 가까워요
+                            </div>
+                          )}
                         </div>
                       </div>
                       {sIdx < currentRoute.sub_paths.length - 1 && (
                         <div className="w-0.5 h-4 bg-gray-200 ml-8 my-1" />
                       )}
                     </div>
-                  ))
+                    );
+                  })
                 ) : (
                   <div className="space-y-3">
                     <div className="flex items-center gap-3">

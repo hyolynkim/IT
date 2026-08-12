@@ -161,7 +161,13 @@ def get_odsay_route(sx, sy, ex, ey):
         return None
 
 def find_cat_optimal_route(start_name, end_name, departure_hour, mode="general"):  # ⬅️ mode 파라미터 추가
-    """최적 경로 반환 메인 로직"""
+    """최적 경로 반환 메인 로직
+
+    mode:
+      - "general" (기본값): 광역버스 포함 경로 우선, 그다음 소요시간 순
+      - "accessibility": 노약자/임산부용 — 환승 횟수 · 도보 시간이 적은(=몸에
+        부담이 적은) 경로를 우선으로 재정렬 (같은 후보 경로 목록 안에서 순서만 다르게)
+    """
     sx, sy = get_coords_from_keyword(start_name)
     ex, ey = get_coords_from_keyword(end_name)
     
@@ -220,11 +226,23 @@ def find_cat_optimal_route(start_name, end_name, departure_hour, mode="general")
             "sub_paths": detailed_segments
         })
 
-    refined_paths.sort(key=lambda x: (
-        not x["has_express_bus"],
-        x["estimated_comfort_time_min"]
-    ))
-    
+    if mode == "accessibility":
+        # 노약자/임산부 모드: 환승이 적고, 그다음 도보가 적은 경로를 우선
+        # (같은 후보군 안에서 "빠른 길"이 아니라 "부담이 적은 길"을 기준으로 재정렬).
+        # select_accessibility_routes가 최종 선택을 다시 하긴 하지만, 그 앞단
+        # 후보 풀(상위 8개)을 뽑을 때부터 이 기준으로 정렬돼 있어야 함.
+        refined_paths.sort(key=lambda x: (
+            x["transfer_count"],
+            x["walk_time_total_min"],
+            x["estimated_comfort_time_min"],
+        ))
+    else:
+        # 일반 모드(기존과 동일): 광역버스 포함 경로를 상위로 정렬 후 소요시간 순 정렬
+        refined_paths.sort(key=lambda x: (
+            not x["has_express_bus"],
+            x["estimated_comfort_time_min"]
+        ))
+
     return {
         "status": "success",
         "start": start_name,
